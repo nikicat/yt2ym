@@ -351,15 +351,28 @@ class YandexMusic:
                 if up.status not in (200, 201):
                     raise RuntimeError(f"upload HTTP {up.status}: {body}")
                 if "OK" not in body.upper() and "CREATED" not in body.upper():
-                    raise RuntimeError(f"upload returned {up.status} but unexpected body: {body}")
+                    raise RuntimeError(f"upload returned {up.status} but unexpected body: {body!r}")
 
-    async def upload_many(self, files: list[Path], playlist_kind: str) -> None:
+    async def upload_many(self, files: list[Path], playlist_kind: str, *, attempts: int = 4) -> None:
         # Yandex displays user-uploaded tracks newest-first, so upload in reverse
         # order to get caller-supplied order on display.
+        # Storage backend intermittently returns HTTP 200 with an empty body —
+        # retry transparently before giving up.
         async with self._session() as session:
             for f in reversed(files):
-                logger.info("→ uploading %s (playlist kind=%s)", f.name, playlist_kind)
-                await self.upload_one(session, f, playlist_kind)
+                for attempt in range(1, attempts + 1):
+                    logger.info("→ uploading %s (playlist kind=%s)%s",
+                                f.name, playlist_kind,
+                                "" if attempt == 1 else f" [retry {attempt}/{attempts}]")
+                    try:
+                        await self.upload_one(session, f, playlist_kind)
+                        break
+                    except RuntimeError as e:
+                        if attempt == attempts:
+                            raise
+                        delay = 2 ** (attempt - 1)
+                        logger.warning("upload failed (%s); retrying in %ds", e, delay)
+                        await asyncio.sleep(delay)
         logger.info("done: %d file(s) uploaded", len(files))
 
 
