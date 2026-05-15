@@ -408,6 +408,9 @@ class Cli:
         dest.mkdir(parents=True, exist_ok=True)
         cmd = [
             "yt-dlp",
+            # Prefer m4a/aac: opus can't carry the embedded PNG cover through
+            # ffmpeg's stream-copy chapter split (Unsupported codec id in stream 1).
+            "-f", "bestaudio[ext=m4a]/bestaudio",
             "-x",  # extract audio in native format (no transcoding)
             "--embed-metadata",
             "--no-embed-chapters",  # avoid chapter atoms — Yandex picks them as title
