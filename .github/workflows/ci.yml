@@ -11,16 +11,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
-      - name: Sync deps
-        run: uv sync --frozen
+      - run: uv sync --frozen
       - name: pyright
         run: uvx pyright yt2ym.py
 
-  smoke:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: ruff
+        run: uvx ruff check .
+
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv sync --frozen
+      - name: pytest
+        run: uv run pytest
       - name: CLI help loads
         run: uv run yt2ym.py --help
