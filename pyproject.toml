@@ -1,0 +1,16 @@
+[project]
+name = "yt2ym"
+version = "0.1.0"
+description = "Download YouTube audio with chapter splitting and upload to Yandex Music"
+requires-python = ">=3.11"
+dependencies = [
+    "aiohttp>=3.9",
+    "asyncclick>=8.3.0.7",
+    "mutagen>=1.47.0",
+    "yandex-music>=2,<3",
+]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+reportPrivateImportUsage = "none"
