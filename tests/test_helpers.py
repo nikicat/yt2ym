@@ -101,6 +101,9 @@ def test_upload_target_accepts_both_spellings(key: str):
     assert UploadTarget.model_validate_json(f'{{"{key}": "u"}}').post_target == "u"
 
 
+URL = yt2ym.MediaUrl("https://example.com/v")
+
+
 class FakeYoutubeDL:
     params: dict[str, Any] = {}
     retcode = 0
@@ -120,7 +123,7 @@ class FakeYoutubeDL:
 
 def test_download_audio_split_chapters_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(yt2ym, "YoutubeDL", FakeYoutubeDL)
-    download_audio("https://example.com/v", tmp_path, split_chapters=True)
+    download_audio(URL, tmp_path, split_chapters=True)
     params = FakeYoutubeDL.params
     chapter = tmp_path / "%(section_number)02d - %(section_title)s.%(ext)s"
     assert params["outtmpl"]["chapter"] == str(chapter)
@@ -131,4 +134,25 @@ def test_download_audio_failure_raises(tmp_path: Path, monkeypatch: pytest.Monke
     monkeypatch.setattr(yt2ym, "YoutubeDL", FakeYoutubeDL)
     monkeypatch.setattr(FakeYoutubeDL, "retcode", 1)
     with pytest.raises(click.ClickException):
-        download_audio("https://example.com/v", tmp_path, split_chapters=False)
+        download_audio(URL, tmp_path, split_chapters=False)
+
+
+def test_probe_url_reports_yt_dlp_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FailingYoutubeDL(FakeYoutubeDL):
+        def extract_info(self, url: str, download: bool = True) -> dict[str, Any] | None:
+            raise yt2ym.DownloadError("ERROR: Unsupported URL")
+
+    monkeypatch.setattr(yt2ym, "YoutubeDL", FailingYoutubeDL)
+    with pytest.raises(click.ClickException, match="failed to probe"):
+        yt2ym.probe_url(URL)
+
+
+def test_parse_playlist() -> None:
+    def parse(value: str) -> yt2ym.PlaylistRef | None:
+        return yt2ym.parse_playlist(None, None, value)  # type: ignore[arg-type]
+
+    assert parse("3") == yt2ym.PlaylistKind(3)
+    assert isinstance(parse("3"), yt2ym.PlaylistKind)
+    for title in ["Mix 3", "²"]:
+        assert parse(title) == title
+        assert isinstance(parse(title), yt2ym.PlaylistTitle)

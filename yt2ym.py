@@ -18,7 +18,7 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, NewType
 
 import aiohttp
 import asyncclick as click
@@ -30,11 +30,41 @@ from yandex_music import ClientAsync, DeviceCode
 from yandex_music import Playlist as YmPlaylist
 from yandex_music.exceptions import DeviceAuthError
 from yt_dlp import YoutubeDL, parse_options
+from yt_dlp.utils import DownloadError
 
 logger = logging.getLogger("yt2ym")
 
 AUDIO_EXTS = {".mp3", ".m4a"}
 CHAPTER_PAT = re.compile(r"^(\d+)\s*-\s*(.+)\.(?:mp3|m4a)$")
+
+
+Token = NewType("Token", str)
+"""A Yandex Music OAuth token."""
+
+Uid = NewType("Uid", int)
+"""The id of a Yandex Music account."""
+
+MediaUrl = NewType("MediaUrl", str)
+"""The page that yt-dlp downloads from. It can also be any other input that yt-dlp accepts."""
+
+TrackTitle = NewType("TrackTitle", str)
+"""The title of a track, as Yandex Music shows it in a playlist."""
+
+VideoId = NewType("VideoId", str)
+"""The id that the media's site gives the video, such as a YouTube video id."""
+
+
+# Classes rather than NewType, because a PlaylistRef is told apart at run time.
+class PlaylistKind(int):
+    """The id of a playlist within its owner's account."""
+
+
+class PlaylistTitle(str):
+    """The title of a playlist. Commands select a playlist by its exact title."""
+
+
+type PlaylistRef = PlaylistKind | PlaylistTitle
+"""A playlist given by its kind or by its title."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,23 +74,23 @@ class Cover:
 
 
 class VideoMeta(BaseModel, frozen=True):
-    id: str
+    id: VideoId
     title: str
 
 
 # --- Yandex API responses (only the fields we read) --------------------------
 
 
-class TrackTitle(BaseModel):
-    title: str | None = None
+class Track(BaseModel):
+    title: TrackTitle | None = None
 
 
-class PlaylistItem(TrackTitle):
+class PlaylistItem(Track):
     """A playlist entry: either wraps a `track`, or carries `title` itself."""
-    track: TrackTitle | None = None
+    track: Track | None = None
 
     @property
-    def effective_title(self) -> str | None:
+    def effective_title(self) -> TrackTitle | None:
         return (self.track or self).title
 
 
@@ -81,13 +111,19 @@ class UploadTarget(BaseModel):
 # --- helpers (audio / paths / yt-dlp) ----------------------------------------
 
 
-def probe_url(url: str) -> VideoMeta:
-    """Returns the id and title of the video at `url`, without downloading it."""
+def probe_url(url: MediaUrl) -> VideoMeta:
+    """Returns the id and title of the video at `url`, without downloading it.
+
+    Errors with click.ClickException when yt-dlp fails or returns no id and title.
+    """
     with YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
-        return VideoMeta.model_validate(ydl.extract_info(url, download=False))
+        try:
+            return VideoMeta.model_validate(ydl.extract_info(url, download=False))
+        except (DownloadError, ValidationError) as e:
+            raise click.ClickException(f"yt-dlp failed to probe {url}: {e}") from e
 
 
-def download_audio(url: str, dest: Path, split_chapters: bool) -> None:
+def download_audio(url: MediaUrl, dest: Path, split_chapters: bool) -> None:
     """Downloads the audio of `url` into `dest`.
 
     With `split_chapters`, it also writes one file per chapter next to it.
@@ -119,7 +155,7 @@ def download_audio(url: str, dest: Path, split_chapters: bool) -> None:
             raise click.ClickException(f"yt-dlp failed to download {url}")
 
 
-def default_cache_dir(video_id: str) -> Path:
+def default_cache_dir(video_id: VideoId) -> Path:
     root = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "yt2ym"
     return root / video_id
 
@@ -163,7 +199,7 @@ def extract_cover(path: Path) -> Cover | None:
     return None
 
 
-def file_title(path: Path) -> str:
+def file_title(path: Path) -> TrackTitle:
     """Title used when comparing to Yandex playlist tracks. Prefers the
     format's title tag; falls back to the filename (with extension) — that's
     what Yandex displays when no tag is present."""
@@ -173,17 +209,17 @@ def file_title(path: Path) -> str:
             tags = MP3(path).tags
             tit2 = tags.get("TIT2") if tags else None
             if isinstance(tit2, TIT2) and tit2.text:
-                return str(tit2.text[0])
+                return TrackTitle(tit2.text[0])
         elif suffix == ".m4a":
             nam = MP4(path).get("\xa9nam")
             if nam:
-                return str(nam[0])
+                return TrackTitle(nam[0])
     except Exception:
         logger.debug("failed to read title tag from %s", path, exc_info=True)
-    return path.name
+    return TrackTitle(path.name)
 
 
-def write_title_track(path: Path, title: str, track: int) -> None:
+def write_title_track(path: Path, title: TrackTitle, track: int) -> None:
     """Write title + track-number tags appropriate to the file format."""
     suffix = path.suffix.lower()
     if suffix == ".mp3":
@@ -227,12 +263,12 @@ class _Api:
     URL = "https://api.music.yandex.net"
 
     session: aiohttp.ClientSession
-    uid: int
+    uid: Uid
 
-    def playlist_url(self, kind: str, suffix: str = "") -> str:
+    def playlist_url(self, kind: PlaylistKind, suffix: str = "") -> str:
         return f"{self.URL}/users/{self.uid}/playlists/{kind}{suffix}"
 
-    def upload_target_url(self, kind: str, file_name: str) -> str:
+    def upload_target_url(self, kind: PlaylistKind, file_name: str) -> str:
         encoded = urllib.parse.quote(file_name, safe="_!() ").replace(" ", "+")
         return (
             f"{self.URL}/loader/upload-url"
@@ -242,24 +278,24 @@ class _Api:
 
     # Raw API, because the yandex_music library currently crashes deserializing
     # user-uploaded tracks.
-    async def fetch_playlist(self, kind: str) -> Playlist:
+    async def fetch_playlist(self, kind: PlaylistKind) -> Playlist:
         async with self.session.get(self.playlist_url(kind)) as r:
             return (await _ok_json(r, "playlist fetch", PlaylistResponse)).result
 
-    async def upload_cover(self, kind: str, cover: Cover) -> None:
+    async def upload_cover(self, kind: PlaylistKind, cover: Cover) -> None:
         form = aiohttp.FormData()
         form.add_field("image", cover.data, filename="cover", content_type=cover.mime)
         async with self.session.post(self.playlist_url(kind, "/cover/upload"), data=form) as r:
             await _ok_text(r, "playlist cover upload")
 
-    async def delete_tracks(self, kind: str, playlist: Playlist) -> None:
+    async def delete_tracks(self, kind: PlaylistKind, playlist: Playlist) -> None:
         """Removes every track from playlist `kind`.
 
         The given `playlist` is the playlist's current state. Its revision and track count
         go into the request.
         """
         form = aiohttp.FormData()
-        form.add_field("kind", kind)
+        form.add_field("kind", str(kind))
         form.add_field("revision", str(playlist.revision))
         form.add_field(
             "diff", json.dumps([{"op": "delete", "from": 0, "to": playlist.track_count}])
@@ -268,7 +304,7 @@ class _Api:
         async with self.session.post(self.playlist_url(kind, "/change"), data=form) as r:
             await _ok_text(r, "playlist clear")
 
-    async def upload_one(self, file_path: Path, playlist_kind: str) -> None:
+    async def upload_one(self, file_path: Path, playlist_kind: PlaylistKind) -> None:
         file_name = file_path.name
 
         async with self.session.post(self.upload_target_url(playlist_kind, file_name)) as resp:
@@ -295,20 +331,20 @@ class YandexMusic:
 
     TOKEN_FILE = Path.home() / ".config" / "yt2ym" / "token"
 
-    def __init__(self, token: str) -> None:
+    def __init__(self, token: Token) -> None:
         self.token = token
         self._client: ClientAsync | None = None
-        self._uid: int | None = None
+        self._uid: Uid | None = None
 
     @classmethod
     def from_args(cls, cli_token: str | None) -> YandexMusic:
         if cli_token:
-            return cls(cli_token.strip())
+            return cls(Token(cli_token.strip()))
         env = os.getenv("YANDEX_MUSIC_TOKEN")
         if env:
-            return cls(env.strip())
+            return cls(Token(env.strip()))
         if cls.TOKEN_FILE.exists():
-            return cls(cls.TOKEN_FILE.read_text().strip())
+            return cls(Token(cls.TOKEN_FILE.read_text().strip()))
         raise click.ClickException(
             "No Yandex Music token. Run `login`, pass --token, set $YANDEX_MUSIC_TOKEN, "
             f"or write it to {cls.TOKEN_FILE}."
@@ -324,7 +360,7 @@ class YandexMusic:
             print(f"  Enter code: {code.user_code}\n  Waiting for approval...\n")
 
         try:
-            token = (await ClientAsync().device_auth(on_code=show)).access_token
+            token = Token((await ClientAsync().device_auth(on_code=show)).access_token)
         except DeviceAuthError as e:
             raise click.ClickException(f"oauth failed: {e}") from e
         cls.TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -339,10 +375,10 @@ class YandexMusic:
             me = self._client.me
             if me is None or me.account is None or me.account.uid is None:
                 raise click.ClickException("token invalid: failed to fetch account info")
-            self._uid = me.account.uid
+            self._uid = Uid(me.account.uid)
         return self._client
 
-    async def uid(self) -> int:
+    async def uid(self) -> Uid:
         await self._ensure_client()
         assert self._uid is not None
         return self._uid
@@ -358,39 +394,42 @@ class YandexMusic:
         c = await self._ensure_client()
         return await c.users_playlists_list()
 
-    async def create_playlist(self, title: str, public: bool) -> YmPlaylist:
+    async def create_playlist(self, title: PlaylistTitle, public: bool) -> YmPlaylist:
         c = await self._ensure_client()
         pl = await c.users_playlists_create(
             title=title,
             visibility="public" if public else "private",
         )
-        if pl is None:
+        if pl is None or pl.kind is None:
             raise click.ClickException("failed to create playlist")
         return pl
 
-    async def resolve_or_create_playlist(self, name_or_kind: str) -> str:
-        """If `name_or_kind` is numeric → assume it's an existing kind id.
-        Otherwise look up an existing playlist by exact title, create if missing.
-        Returns the numeric kind as a string."""
-        if name_or_kind.isdigit():
-            return name_or_kind
-        for p in await self.list_playlists():
-            if p.title == name_or_kind:
-                return str(p.kind)
-        pl = await self.create_playlist(name_or_kind, public=False)
-        logger.info("created playlist %r (kind=%s)", pl.title, pl.kind)
-        return str(pl.kind)
+    async def resolve_or_create_playlist(self, playlist: PlaylistRef) -> PlaylistKind:
+        """Returns the kind of `playlist`.
 
-    async def set_playlist_cover(self, kind: str, cover: Cover) -> None:
+        A name selects the playlist with that exact title, and creates a private one when
+        there is none.
+        """
+        if isinstance(playlist, PlaylistKind):
+            return playlist
+        for p in await self.list_playlists():
+            if p.title == playlist and p.kind is not None:
+                return PlaylistKind(p.kind)
+        pl = await self.create_playlist(playlist, public=False)
+        logger.info("created playlist %r (kind=%s)", pl.title, pl.kind)
+        assert pl.kind is not None
+        return PlaylistKind(pl.kind)
+
+    async def set_playlist_cover(self, kind: PlaylistKind, cover: Cover) -> None:
         async with self._api() as api:
             await api.upload_cover(kind, cover)
 
-    async def fetch_playlist(self, kind: str) -> Playlist:
+    async def fetch_playlist(self, kind: PlaylistKind) -> Playlist:
         """Returns playlist `kind` with its tracks."""
         async with self._api() as api:
             return await api.fetch_playlist(kind)
 
-    async def clear_playlist(self, kind: str) -> int:
+    async def clear_playlist(self, kind: PlaylistKind) -> int:
         """Removes every track from playlist `kind`. Returns the number of tracks removed."""
         async with self._api() as api:
             pl = await api.fetch_playlist(kind)
@@ -399,13 +438,13 @@ class YandexMusic:
             await api.delete_tracks(kind, pl)
         return pl.track_count
 
-    async def playlist_track_titles(self, kind: str) -> set[str]:
+    async def playlist_track_titles(self, kind: PlaylistKind) -> set[TrackTitle]:
         """Returns the titles of the tracks in playlist `kind`."""
         pl = await self.fetch_playlist(kind)
         return {t for item in pl.tracks if (t := item.effective_title)}
 
     async def upload_many(
-        self, files: list[Path], playlist_kind: str, *, attempts: int = 4
+        self, files: list[Path], playlist_kind: PlaylistKind, *, attempts: int = 4
     ) -> None:
         # Yandex displays user-uploaded tracks newest-first, so upload in reverse
         # order to get caller-supplied order on display.
@@ -455,12 +494,14 @@ class Cli:
         for p in await self.ym.list_playlists():
             print(f"  {p.kind}\t{p.title}")
 
-    async def create_playlist(self, title: str, public: bool) -> None:
+    async def create_playlist(self, title: PlaylistTitle, public: bool) -> None:
         pl = await self.ym.create_playlist(title, public)
         visibility = "public" if public else "private"
         print(f"created: kind={pl.kind} title={pl.title!r} visibility={visibility}")
 
-    def _download_to(self, url: str, dest: Path, split_chapters: bool, force: bool) -> list[Path]:
+    def _download_to(
+        self, url: MediaUrl, dest: Path, split_chapters: bool, force: bool
+    ) -> list[Path]:
         """Run yt-dlp into `dest`, tag chapter files. Skip if audio files already
         present (unless `force`). Uses the source's native m4a/aac (no transcoding)."""
         if not force:
@@ -477,14 +518,14 @@ class Cli:
             m = CHAPTER_PAT.match(f.name)
             if not m:
                 continue
-            write_title_track(f, m.group(2), int(m.group(1)))
+            write_title_track(f, TrackTitle(m.group(2)), int(m.group(1)))
 
         files = existing_audio(dest, split_chapters)
         if not files:
             raise click.ClickException(f"no audio produced in {dest}")
         return files
 
-    async def _upload_files(self, files: list[Path], kind: str, force: bool) -> None:
+    async def _upload_files(self, files: list[Path], kind: PlaylistKind, force: bool) -> None:
         """Upload `files` to playlist `kind`. Normally skips any whose title is
         already in the playlist. With `force`, first wipes the playlist clean,
         then uploads everything."""
@@ -505,7 +546,7 @@ class Cli:
             return
         await self.ym.upload_many(to_upload, kind)
 
-    async def _set_cover_from(self, kind: str, source: Path) -> None:
+    async def _set_cover_from(self, kind: PlaylistKind, source: Path) -> None:
         cover = extract_cover(source)
         if not cover:
             logger.info("no APIC cover in %s; skipping playlist cover", source.name)
@@ -514,7 +555,7 @@ class Cli:
         logger.info("set playlist cover (%d bytes, %s) from %s",
                     len(cover.data), cover.mime, source.name)
 
-    async def set_cover(self, playlist: str, source: Path) -> None:
+    async def set_cover(self, playlist: PlaylistRef, source: Path) -> None:
         kind = await self.ym.resolve_or_create_playlist(playlist)
         if source.suffix.lower() in AUDIO_EXTS:
             await self._set_cover_from(kind, source)
@@ -523,7 +564,7 @@ class Cli:
         await self.ym.set_playlist_cover(kind, Cover(data=source.read_bytes(), mime=mime))
         logger.info("set playlist kind=%s cover from %s", kind, source.name)
 
-    async def clear_playlist(self, playlist: str, yes: bool) -> None:
+    async def clear_playlist(self, playlist: PlaylistRef, yes: bool) -> None:
         kind = await self.ym.resolve_or_create_playlist(playlist)
         if not yes:
             pl = await self.ym.fetch_playlist(kind)
@@ -536,33 +577,47 @@ class Cli:
         cleared = await self.ym.clear_playlist(kind)
         logger.info("cleared %d track(s) from playlist kind=%s", cleared, kind)
 
-    def download(self, url: str, out: Path | None, split_chapters: bool, force: bool) -> list[Path]:
+    def download(
+        self, url: MediaUrl, out: Path | None, split_chapters: bool, force: bool
+    ) -> list[Path]:
         dest = out or default_cache_dir(probe_url(url).id)
         return self._download_to(url, dest, split_chapters, force)
 
-    async def upload(self, path: Path, playlist: str, force: bool) -> None:
+    async def upload(self, path: Path, playlist: PlaylistRef, force: bool) -> None:
         files = collect_audio(path)
         if not files:
             raise click.ClickException(f"no audio files at {path}")
         kind = await self.ym.resolve_or_create_playlist(playlist)
         await self._upload_files(files, kind, force)
 
-    async def sync(self, url: str, playlist: str | None, out: Path | None,
+    async def sync(self, url: MediaUrl, playlist: PlaylistRef | None, out: Path | None,
                    force: bool, *, split_chapters: bool) -> None:
         """Download (single track or chaptered) → resolve/create playlist →
         upload → set cover from the first track. With `split_chapters` and no
         explicit playlist, defaults the playlist name to the video title."""
         probe = probe_url(url)
         dest = out or default_cache_dir(probe.id)
-        playlist_name = playlist or (probe.title if split_chapters else None)
-        if playlist_name is None:
-            raise click.ClickException("--playlist is required for `sync`")
         if playlist is None:
-            logger.info("using video title as playlist name: %r", playlist_name)
-        kind = await self.ym.resolve_or_create_playlist(playlist_name)
+            if not split_chapters:
+                raise click.ClickException("--playlist is required for `sync`")
+            playlist = PlaylistTitle(probe.title)
+            logger.info("using video title as playlist name: %r", playlist)
+        kind = await self.ym.resolve_or_create_playlist(playlist)
         files = self._download_to(url, dest, split_chapters, force)
         await self._upload_files(files, kind, force)
         await self._set_cover_from(kind, files[0])
+
+
+def parse_playlist(
+    _ctx: click.Context, _param: click.Parameter, value: str | None
+) -> PlaylistRef | None:
+    """Returns the playlist that a command-line argument names.
+
+    An argument of decimal digits is a kind. Any other argument is a title.
+    """
+    if value is None:
+        return None
+    return PlaylistKind(value) if value.isdecimal() else PlaylistTitle(value)
 
 
 PLAYLIST_HELP = 'playlist by kind id (e.g. "3" = Liked) or by name (creates if missing).'
@@ -586,7 +641,7 @@ def playlist_option[F: Callable[..., Any]](
     *, required: bool = True, help_suffix: str = ""
 ) -> Callable[[F], F]:
     return click.option(
-        "--playlist", required=required, default=None,
+        "--playlist", required=required, default=None, callback=parse_playlist,
         help=PLAYLIST_HELP + help_suffix,
     )
 
@@ -613,18 +668,18 @@ async def playlists(c: Cli) -> None:
 
 
 @cli.command("create-playlist", help="create a new playlist")
-@click.argument("title")
+@click.argument("title", type=PlaylistTitle)
 @click.option("--public", is_flag=True, help="make playlist public (default: private)")
 @click.pass_obj
-async def create_playlist(c: Cli, title: str, public: bool) -> None:
+async def create_playlist(c: Cli, title: PlaylistTitle, public: bool) -> None:
     await c.create_playlist(title, public)
 
 
 @cli.command("clear-playlist", help="remove all tracks from a playlist (by kind id or name)")
-@click.argument("playlist")
+@click.argument("playlist", callback=parse_playlist)
 @click.option("--yes", is_flag=True, help="skip confirmation prompt")
 @click.pass_obj
-async def clear_playlist(c: Cli, playlist: str, yes: bool) -> None:
+async def clear_playlist(c: Cli, playlist: PlaylistRef, yes: bool) -> None:
     await c.clear_playlist(playlist, yes)
 
 
@@ -632,20 +687,20 @@ async def clear_playlist(c: Cli, playlist: str, yes: bool) -> None:
     "set-cover",
     help="set a playlist's cover from an audio file (embedded cover) or image file",
 )
-@click.argument("playlist")
+@click.argument("playlist", callback=parse_playlist)
 @click.argument("source", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.pass_obj
-async def set_cover(c: Cli, playlist: str, source: Path) -> None:
+async def set_cover(c: Cli, playlist: PlaylistRef, source: Path) -> None:
     await c.set_cover(playlist, source)
 
 
 @cli.command(help="download audio (splits by chapters if present)")
-@click.argument("url")
+@click.argument("url", type=MediaUrl)
 @click.option("--single", is_flag=True, help="don't split chapters (download as one file)")
 @out_option
 @force_option
 @click.pass_obj
-async def download(c: Cli, url: str, single: bool, out: Path | None, force: bool) -> None:
+async def download(c: Cli, url: MediaUrl, single: bool, out: Path | None, force: bool) -> None:
     c.download(url, out, split_chapters=not single, force=force)
 
 
@@ -654,17 +709,17 @@ async def download(c: Cli, url: str, single: bool, out: Path | None, force: bool
 @playlist_option()
 @force_option
 @click.pass_obj
-async def upload(c: Cli, path: Path, playlist: str, force: bool) -> None:
+async def upload(c: Cli, path: Path, playlist: PlaylistRef, force: bool) -> None:
     await c.upload(path, playlist, force)
 
 
 @cli.command(help="download a video as a single track and upload it")
-@click.argument("url")
+@click.argument("url", type=MediaUrl)
 @playlist_option()
 @out_option
 @force_option
 @click.pass_obj
-async def sync(c: Cli, url: str, playlist: str, out: Path | None, force: bool) -> None:
+async def sync(c: Cli, url: MediaUrl, playlist: PlaylistRef, out: Path | None, force: bool) -> None:
     await c.sync(url, playlist, out, force, split_chapters=False)
 
 
@@ -673,12 +728,14 @@ async def sync(c: Cli, url: str, playlist: str, out: Path | None, force: bool) -
     help="download a chaptered video and upload each chapter as a track. "
          "Default playlist = video title (created if missing).",
 )
-@click.argument("url")
+@click.argument("url", type=MediaUrl)
 @playlist_option(required=False, help_suffix=" Defaults to the video title.")
 @out_option
 @force_option
 @click.pass_obj
-async def sync_album(c: Cli, url: str, playlist: str | None, out: Path | None, force: bool) -> None:
+async def sync_album(
+    c: Cli, url: MediaUrl, playlist: PlaylistRef | None, out: Path | None, force: bool
+) -> None:
     await c.sync(url, playlist, out, force, split_chapters=True)
 
 
