@@ -17,6 +17,7 @@ import urllib.parse
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from functools import cached_property
 from pathlib import Path
 from typing import Any, NewType
 
@@ -65,6 +66,9 @@ class PlaylistTitle(str):
 
 type PlaylistRef = PlaylistKind | PlaylistTitle
 """A playlist given by its kind or by its title."""
+
+LIKED_KIND = PlaylistKind(3)
+"""The kind of every account's Liked playlist (Мне нравится)."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -160,16 +164,20 @@ def default_cache_dir(video_id: VideoId) -> Path:
     return root / video_id
 
 
+def is_audio(path: Path) -> bool:
+    return path.suffix.lower() in AUDIO_EXTS
+
+
 def collect_audio(path: Path) -> list[Path]:
     if path.is_file():
         return [path]
-    return sorted(p for p in path.iterdir() if p.suffix.lower() in AUDIO_EXTS)
+    return sorted(filter(is_audio, path.iterdir()))
 
 
 def existing_audio(dest: Path, split_chapters: bool) -> list[Path]:
     if not dest.exists():
         return []
-    all_audio = sorted(p for p in dest.iterdir() if p.suffix.lower() in AUDIO_EXTS)
+    all_audio = collect_audio(dest)
     chapters = [p for p in all_audio if CHAPTER_PAT.match(p.name)]
     if split_chapters and chapters:
         return chapters
@@ -476,21 +484,15 @@ class Cli:
 
     def __init__(self, token_arg: str | None) -> None:
         self._token_arg = token_arg
-        self._ym: YandexMusic | None = None
 
-    @property
+    @cached_property
     def ym(self) -> YandexMusic:
-        if self._ym is None:
-            self._ym = YandexMusic.from_args(self._token_arg)
-        return self._ym
+        return YandexMusic.from_args(self._token_arg)
 
     # --- subcommands ---
 
-    async def login(self) -> None:
-        await YandexMusic.login()
-
     async def playlists(self) -> None:
-        print("  3\tМне нравится (Liked)")
+        print(f"  {LIKED_KIND}\tМне нравится (Liked)")
         for p in await self.ym.list_playlists():
             print(f"  {p.kind}\t{p.title}")
 
@@ -557,7 +559,7 @@ class Cli:
 
     async def set_cover(self, playlist: PlaylistRef, source: Path) -> None:
         kind = await self.ym.resolve_or_create_playlist(playlist)
-        if source.suffix.lower() in AUDIO_EXTS:
+        if is_audio(source):
             await self._set_cover_from(kind, source)
             return
         mime = "image/jpeg" if source.suffix.lower() in (".jpg", ".jpeg") else "image/png"
@@ -620,7 +622,9 @@ def parse_playlist(
     return PlaylistKind(value) if value.isdecimal() else PlaylistTitle(value)
 
 
-PLAYLIST_HELP = 'playlist by kind id (e.g. "3" = Liked) or by name (creates if missing).'
+PLAYLIST_HELP = (
+    f'playlist by kind id (e.g. "{LIKED_KIND}" = Liked) or by name (creates if missing).'
+)
 TOKEN_HELP = "Yandex Music OAuth token (else $YANDEX_MUSIC_TOKEN / ~/.config/yt2ym/token)"
 OUT_HELP = "output directory (default: ~/.cache/yt2ym/<videoid>/)"
 FORCE_HELP = "bypass idempotency: re-download, and wipe the playlist before re-uploading"
@@ -656,9 +660,8 @@ async def cli(ctx: click.Context, token: str | None) -> None:
 
 
 @cli.command(help="OAuth device flow → save token")
-@click.pass_obj
-async def login(c: Cli) -> None:
-    await c.login()
+async def login() -> None:
+    await YandexMusic.login()
 
 
 @cli.command(help="list your Yandex Music playlists")
