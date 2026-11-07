@@ -353,7 +353,9 @@ class YandexMusic:
                 if "OK" not in body.upper() and "CREATED" not in body.upper():
                     raise RuntimeError(f"upload returned {up.status} but unexpected body: {body!r}")
 
-    async def upload_many(self, files: list[Path], playlist_kind: str, *, attempts: int = 4) -> None:
+    async def upload_many(
+        self, files: list[Path], playlist_kind: str, *, attempts: int = 4
+    ) -> None:
         # Yandex displays user-uploaded tracks newest-first, so upload in reverse
         # order to get caller-supplied order on display.
         # Storage backend intermittently returns HTTP 200 with an empty body —
