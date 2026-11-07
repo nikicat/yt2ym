@@ -26,7 +26,8 @@ import asyncclick as click
 from mutagen.id3 import TIT2, TRCK
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover
-from yandex_music import ClientAsync
+from yandex_music import ClientAsync, DeviceCode
+from yandex_music.exceptions import DeviceAuthError
 
 logger = logging.getLogger("yt2ym")
 
@@ -152,10 +153,6 @@ class YandexMusic:
     API = "https://api.music.yandex.net"
     TOKEN_FILE = Path.home() / ".config" / "yt2ym" / "token"
 
-    # Public Smart TV credentials reused by every open-source Yandex Music client.
-    CLIENT_ID = "23cabbbdc6cd418abb4b39c32c41195d"
-    CLIENT_SECRET = "53bc75238f0c4d08a118e51fe9203300"
-
     def __init__(self, token: str) -> None:
         self.token = token
         self._client: ClientAsync | None = None
@@ -177,48 +174,22 @@ class YandexMusic:
 
     @classmethod
     async def login(cls) -> YandexMusic:
-        """OAuth 2.0 device flow → save token → return ready instance."""
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://oauth.yandex.ru/device/code",
-                data={"client_id": cls.CLIENT_ID},
-            ) as resp:
-                d = await cls._ok_json(resp, "device/code")
+        """OAuth 2.0 device flow (yandex-music's built-in Smart TV client) → save
+        token → return ready instance."""
 
-            print(f"\n  Open: {d['verification_url']}")
-            print(f"  Enter code: {d['user_code']}\n  Waiting for approval...\n")
+        def show(code: DeviceCode) -> None:
+            print(f"\n  Open: {code.verification_url}")
+            print(f"  Enter code: {code.user_code}\n  Waiting for approval...\n")
 
-            interval = d.get("interval", 5)
-            timeout = d.get("expires_in", 300)
-            elapsed = 0
-            while elapsed < timeout:
-                await asyncio.sleep(interval)
-                elapsed += interval
-                async with session.post(
-                    "https://oauth.yandex.ru/token",
-                    data={
-                        "grant_type": "device_code",
-                        "code": d["device_code"],
-                        "client_id": cls.CLIENT_ID,
-                        "client_secret": cls.CLIENT_SECRET,
-                    },
-                ) as r:
-                    body = await r.json()
-                    if r.status == 200 and "access_token" in body:
-                        token = body["access_token"]
-                        cls.TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-                        cls.TOKEN_FILE.write_text(token)
-                        cls.TOKEN_FILE.chmod(0o600)
-                        print(f"✓ saved token to {cls.TOKEN_FILE}")
-                        return cls(token)
-                    err = body.get("error", "")
-                    if err == "authorization_pending":
-                        continue
-                    if err == "slow_down":
-                        interval += 1
-                        continue
-                    raise click.ClickException(f"oauth failed: {body}")
-            raise click.ClickException("oauth timed out")
+        try:
+            token = (await ClientAsync().device_auth(on_code=show)).access_token
+        except DeviceAuthError as e:
+            raise click.ClickException(f"oauth failed: {e}") from e
+        cls.TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+        cls.TOKEN_FILE.write_text(token)
+        cls.TOKEN_FILE.chmod(0o600)
+        print(f"✓ saved token to {cls.TOKEN_FILE}")
+        return cls(token)
 
     def _session(self) -> aiohttp.ClientSession:
         """A new aiohttp session with this token's Authorization header baked in."""
