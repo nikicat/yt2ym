@@ -9,7 +9,7 @@ Download audio from YouTube, X, or [any site yt-dlp supports](https://github.com
 
 ## Install / run
 
-Requires [uv](https://github.com/astral-sh/uv), [yt-dlp](https://github.com/yt-dlp/yt-dlp), and ffmpeg on `$PATH`.
+Requires [uv](https://github.com/astral-sh/uv) and ffmpeg on `$PATH`. yt2ym uses its own [yt-dlp](https://github.com/yt-dlp/yt-dlp), locked in `uv.lock`, and does not read yt-dlp config files. When a site breaks, update it with `uv lock --upgrade-package yt-dlp && uv sync`.
 
 ```bash
 git clone https://github.com/nikicat/yt2ym

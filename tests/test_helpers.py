@@ -1,12 +1,16 @@
 from pathlib import Path
+from typing import Any, Self
 
+import asyncclick as click
 import pytest
 
+import yt2ym
 from yt2ym import (
     CHAPTER_PAT,
     PlaylistResponse,
     UploadTarget,
     collect_audio,
+    download_audio,
     existing_audio,
     file_title,
 )
@@ -95,3 +99,36 @@ def test_playlist_response_titles_and_defaults():
 @pytest.mark.parametrize("key", ["post-target", "post_target"])
 def test_upload_target_accepts_both_spellings(key: str):
     assert UploadTarget.model_validate_json(f'{{"{key}": "u"}}').post_target == "u"
+
+
+class FakeYoutubeDL:
+    params: dict[str, Any] = {}
+    retcode = 0
+
+    def __init__(self, params: dict[str, Any]) -> None:
+        FakeYoutubeDL.params = params
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        pass
+
+    def download(self, url_list: list[str]) -> int:
+        return self.retcode
+
+
+def test_download_audio_split_chapters_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(yt2ym, "YoutubeDL", FakeYoutubeDL)
+    download_audio("https://example.com/v", tmp_path, split_chapters=True)
+    params = FakeYoutubeDL.params
+    chapter = tmp_path / "%(section_number)02d - %(section_title)s.%(ext)s"
+    assert params["outtmpl"]["chapter"] == str(chapter)
+    assert any(pp["key"] == "FFmpegSplitChapters" for pp in params["postprocessors"])
+
+
+def test_download_audio_failure_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(yt2ym, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(FakeYoutubeDL, "retcode", 1)
+    with pytest.raises(click.ClickException):
+        download_audio("https://example.com/v", tmp_path, split_chapters=False)

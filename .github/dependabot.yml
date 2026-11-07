@@ -9,6 +9,8 @@ updates:
   - package-ecosystem: uv
     directory: /
     schedule:
-      interval: weekly
+      interval: daily
     cooldown:
       default-days: 7
+      # yt-dlp releases are usually fixes for sites that broke; take them at once.
+      exclude: [yt-dlp]

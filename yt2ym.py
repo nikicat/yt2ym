@@ -13,8 +13,6 @@ import json
 import logging
 import os
 import re
-import shutil
-import subprocess
 import urllib.parse
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
@@ -31,6 +29,7 @@ from pydantic import AliasChoices, BaseModel, Field, ValidationError
 from yandex_music import ClientAsync, DeviceCode
 from yandex_music import Playlist as YmPlaylist
 from yandex_music.exceptions import DeviceAuthError
+from yt_dlp import YoutubeDL, parse_options
 
 logger = logging.getLogger("yt2ym")
 
@@ -79,27 +78,45 @@ class UploadTarget(BaseModel):
     post_target: str = Field(validation_alias=AliasChoices("post-target", "post_target"))
 
 
-# --- pure helpers (audio / paths / yt-dlp) -----------------------------------
-
-
-def yt_dlp() -> str:
-    """Returns the path to the yt-dlp executable.
-
-    Errors with click.ClickException when yt-dlp is not in PATH.
-    """
-    exe = shutil.which("yt-dlp")
-    if not exe:
-        raise click.ClickException("yt-dlp not found in PATH")
-    return exe
+# --- helpers (audio / paths / yt-dlp) ----------------------------------------
 
 
 def probe_url(url: str) -> VideoMeta:
-    """Fetch video id + title from yt-dlp without downloading."""
-    r = subprocess.run(
-        [yt_dlp(), "--print", "%(.{id,title})j", "--skip-download", url],
-        check=True, capture_output=True, text=True,
-    )
-    return VideoMeta.model_validate_json(r.stdout)
+    """Returns the id and title of the video at `url`, without downloading it."""
+    with YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
+        return VideoMeta.model_validate(ydl.extract_info(url, download=False))
+
+
+def download_audio(url: str, dest: Path, split_chapters: bool) -> None:
+    """Downloads the audio of `url` into `dest`.
+
+    With `split_chapters`, it also writes one file per chapter next to it.
+
+    Errors with click.ClickException when yt-dlp fails.
+    """
+    # CLI flags rather than a params dict: parse_options builds the postprocessor chain
+    # that -x, --embed-* and --split-chapters need.
+    args = [
+        # Prefer m4a/aac: opus can't carry the embedded PNG cover through
+        # ffmpeg's stream-copy chapter split (Unsupported codec id in stream 1).
+        "-f", "bestaudio[ext=m4a]/bestaudio",
+        "-x",  # extract audio in native format (no transcoding)
+        "--embed-metadata",
+        "--no-embed-chapters",  # avoid chapter atoms — Yandex picks them as title
+        "--embed-thumbnail",
+        "-o", str(dest / "%(title)s.%(ext)s"),
+    ]
+    if split_chapters:
+        args += [
+            "--split-chapters",
+            "-o", "chapter:" + str(dest / "%(section_number)02d - %(section_title)s.%(ext)s"),
+        ]
+    dest.mkdir(parents=True, exist_ok=True)
+    logger.info("yt-dlp %s %s", " ".join(args), url)
+    # Passing argv makes yt-dlp ignore its config files.
+    with YoutubeDL(parse_options(args).ydl_opts) as ydl:
+        if ydl.download([url]):
+            raise click.ClickException(f"yt-dlp failed to download {url}")
 
 
 def default_cache_dir(video_id: str) -> Path:
@@ -452,26 +469,7 @@ class Cli:
                 logger.info("already downloaded → %s (%d file(s); use --force to redo)",
                             dest, len(already))
                 return already
-        cmd = [
-            yt_dlp(),
-            # Prefer m4a/aac: opus can't carry the embedded PNG cover through
-            # ffmpeg's stream-copy chapter split (Unsupported codec id in stream 1).
-            "-f", "bestaudio[ext=m4a]/bestaudio",
-            "-x",  # extract audio in native format (no transcoding)
-            "--embed-metadata",
-            "--no-embed-chapters",  # avoid chapter atoms — Yandex picks them as title
-            "--embed-thumbnail",
-            "-o", str(dest / "%(title)s.%(ext)s"),
-        ]
-        if split_chapters:
-            cmd += [
-                "--split-chapters",
-                "-o", "chapter:" + str(dest / "%(section_number)02d - %(section_title)s.%(ext)s"),
-            ]
-        cmd.append(url)
-        dest.mkdir(parents=True, exist_ok=True)
-        logger.info("Running: %s", " ".join(cmd))
-        subprocess.run(cmd, check=True)
+        download_audio(url, dest, split_chapters)
 
         # yt-dlp's --embed-metadata writes artist/album but not per-chapter title.
         # Recover from the "NN - title" filename pattern.
