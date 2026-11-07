@@ -1,0 +1,9 @@
+from pathlib import Path
+
+from mutagen.id3 import ID3
+
+class MP3:
+    tags: ID3 | None
+    def __init__(self, filename: Path) -> None: ...
+    def add_tags(self) -> None: ...
+    def save(self) -> None: ...

@@ -1,7 +1,7 @@
 # yt2ym
 
 [![CI](https://github.com/nikicat/yt2ym/actions/workflows/ci.yml/badge.svg)](https://github.com/nikicat/yt2ym/actions/workflows/ci.yml)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/python/required-version-toml?tomlFilePath=https://raw.githubusercontent.com/nikicat/yt2ym/main/pyproject.toml)](https://www.python.org/)
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 

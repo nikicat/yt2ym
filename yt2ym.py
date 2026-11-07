@@ -8,8 +8,6 @@ Token: run `login`, or pass --token, or set YANDEX_MUSIC_TOKEN, or place it in
 
 Upload logic adapted from https://github.com/Kay0k1/yandex-music-uploader.
 """
-from __future__ import annotations
-
 import asyncio
 import json
 import logging
@@ -18,15 +16,20 @@ import re
 import shutil
 import subprocess
 import urllib.parse
+from collections.abc import AsyncGenerator, Callable
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 import asyncclick as click
-from mutagen.id3 import TIT2, TRCK
+from mutagen.id3 import APIC, TIT2, TRCK, Encoding
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4, MP4Cover
+from pydantic import AliasChoices, BaseModel, Field, ValidationError
 from yandex_music import ClientAsync, DeviceCode
+from yandex_music import Playlist as YmPlaylist
 from yandex_music.exceptions import DeviceAuthError
 
 logger = logging.getLogger("yt2ym")
@@ -41,24 +44,62 @@ class Cover:
     mime: str
 
 
-@dataclass(frozen=True, slots=True)
-class VideoMeta:
+class VideoMeta(BaseModel, frozen=True):
     id: str
     title: str
+
+
+# --- Yandex API responses (only the fields we read) --------------------------
+
+
+class TrackTitle(BaseModel):
+    title: str | None = None
+
+
+class PlaylistItem(TrackTitle):
+    """A playlist entry: either wraps a `track`, or carries `title` itself."""
+    track: TrackTitle | None = None
+
+    @property
+    def effective_title(self) -> str | None:
+        return (self.track or self).title
+
+
+class Playlist(BaseModel):
+    revision: int
+    track_count: int = Field(0, alias="trackCount")
+    tracks: list[PlaylistItem] = []
+
+
+class PlaylistResponse(BaseModel):
+    result: Playlist
+
+
+class UploadTarget(BaseModel):
+    post_target: str = Field(validation_alias=AliasChoices("post-target", "post_target"))
 
 
 # --- pure helpers (audio / paths / yt-dlp) -----------------------------------
 
 
+def yt_dlp() -> str:
+    """Returns the path to the yt-dlp executable.
+
+    Errors with click.ClickException when yt-dlp is not in PATH.
+    """
+    exe = shutil.which("yt-dlp")
+    if not exe:
+        raise click.ClickException("yt-dlp not found in PATH")
+    return exe
+
+
 def probe_url(url: str) -> VideoMeta:
     """Fetch video id + title from yt-dlp without downloading."""
     r = subprocess.run(
-        ["yt-dlp", "--print", "%(id)s", "--print", "%(title)s",
-         "--skip-download", url],
+        [yt_dlp(), "--print", "%(.{id,title})j", "--skip-download", url],
         check=True, capture_output=True, text=True,
     )
-    video_id, title = r.stdout.strip().splitlines()
-    return VideoMeta(id=video_id, title=title)
+    return VideoMeta.model_validate_json(r.stdout)
 
 
 def default_cache_dir(video_id: str) -> Path:
@@ -91,10 +132,9 @@ def extract_cover(path: Path) -> Cover | None:
             tags = MP3(path).tags
             if not tags:
                 return None
-            for k in tags:
-                if k.startswith("APIC"):
-                    apic = tags[k]
-                    return Cover(data=apic.data, mime=apic.mime)
+            for frame in tags.values():
+                if isinstance(frame, APIC):
+                    return Cover(data=frame.data, mime=frame.mime)
         elif suffix == ".m4a":
             covers = MP4(path).get("covr", [])
             if covers:
@@ -115,7 +155,7 @@ def file_title(path: Path) -> str:
         if suffix == ".mp3":
             tags = MP3(path).tags
             tit2 = tags.get("TIT2") if tags else None
-            if tit2 and tit2.text:
+            if isinstance(tit2, TIT2) and tit2.text:
                 return str(tit2.text[0])
         elif suffix == ".m4a":
             nam = MP4(path).get("\xa9nam")
@@ -134,12 +174,12 @@ def write_title_track(path: Path, title: str, track: int) -> None:
         if audio.tags is None:
             audio.add_tags()
         assert audio.tags is not None
-        audio.tags.add(TIT2(encoding=3, text=title))
-        audio.tags.add(TRCK(encoding=3, text=str(track)))
+        audio.tags.add(TIT2(encoding=Encoding.UTF8, text=title))
+        audio.tags.add(TRCK(encoding=Encoding.UTF8, text=str(track)))
         audio.save()
     elif suffix == ".m4a":
         audio = MP4(path)
-        audio["\xa9nam"] = title
+        audio["\xa9nam"] = [title]
         audio["trkn"] = [(track, 0)]
         audio.save()
 
@@ -147,10 +187,95 @@ def write_title_track(path: Path, title: str, track: int) -> None:
 # --- Yandex Music ------------------------------------------------------------
 
 
+async def _ok_text(r: aiohttp.ClientResponse, label: str) -> str:
+    """Returns the response body. Errors with RuntimeError when the status is not 200."""
+    body = await r.text()
+    if r.status != 200:
+        raise RuntimeError(f"{label} failed: HTTP {r.status} {body}")
+    return body
+
+
+async def _ok_json[M: BaseModel](r: aiohttp.ClientResponse, label: str, model: type[M]) -> M:
+    """Returns the response body parsed into `model`.
+
+    Errors as `_ok_text` does, and with ValidationError when the body does not fit `model`.
+    """
+    return model.model_validate_json(await _ok_text(r, label))
+
+
+@dataclass(frozen=True, slots=True)
+class _Api:
+    """Raw Yandex Music API calls for one account, over one authorized session."""
+
+    URL = "https://api.music.yandex.net"
+
+    session: aiohttp.ClientSession
+    uid: int
+
+    def playlist_url(self, kind: str, suffix: str = "") -> str:
+        return f"{self.URL}/users/{self.uid}/playlists/{kind}{suffix}"
+
+    def upload_target_url(self, kind: str, file_name: str) -> str:
+        encoded = urllib.parse.quote(file_name, safe="_!() ").replace(" ", "+")
+        return (
+            f"{self.URL}/loader/upload-url"
+            f"?uid={self.uid}&playlist-id={self.uid}:{kind}"
+            f"&visibility=private&path={encoded}"
+        )
+
+    # Raw API, because the yandex_music library currently crashes deserializing
+    # user-uploaded tracks.
+    async def fetch_playlist(self, kind: str) -> Playlist:
+        async with self.session.get(self.playlist_url(kind)) as r:
+            return (await _ok_json(r, "playlist fetch", PlaylistResponse)).result
+
+    async def upload_cover(self, kind: str, cover: Cover) -> None:
+        form = aiohttp.FormData()
+        form.add_field("image", cover.data, filename="cover", content_type=cover.mime)
+        async with self.session.post(self.playlist_url(kind, "/cover/upload"), data=form) as r:
+            await _ok_text(r, "playlist cover upload")
+
+    async def delete_tracks(self, kind: str, playlist: Playlist) -> None:
+        """Removes every track from playlist `kind`.
+
+        The given `playlist` is the playlist's current state. Its revision and track count
+        go into the request.
+        """
+        form = aiohttp.FormData()
+        form.add_field("kind", kind)
+        form.add_field("revision", str(playlist.revision))
+        form.add_field(
+            "diff", json.dumps([{"op": "delete", "from": 0, "to": playlist.track_count}])
+        )
+        # The /change endpoint applies a diff to the playlist. This one deletes every index.
+        async with self.session.post(self.playlist_url(kind, "/change"), data=form) as r:
+            await _ok_text(r, "playlist clear")
+
+    async def upload_one(self, file_path: Path, playlist_kind: str) -> None:
+        file_name = file_path.name
+
+        async with self.session.post(self.upload_target_url(playlist_kind, file_name)) as resp:
+            try:
+                post_target = (await _ok_json(resp, "upload-url", UploadTarget)).post_target
+            except ValidationError as e:
+                raise RuntimeError(f"no upload URL in response: {e}") from e
+
+        form = aiohttp.FormData()
+        with open(file_path, "rb") as f:
+            form.add_field("file", f, filename=file_name)
+            async with self.session.post(
+                post_target, data=form, timeout=aiohttp.ClientTimeout(total=600)
+            ) as up:
+                body = await up.text()
+                if up.status not in (200, 201):
+                    raise RuntimeError(f"upload HTTP {up.status}: {body}")
+                if "OK" not in body.upper() and "CREATED" not in body.upper():
+                    raise RuntimeError(f"upload returned {up.status} but unexpected body: {body!r}")
+
+
 class YandexMusic:
     """Yandex Music OAuth token + lazy client + upload operations."""
 
-    API = "https://api.music.yandex.net"
     TOKEN_FILE = Path.home() / ".config" / "yt2ym" / "token"
 
     def __init__(self, token: str) -> None:
@@ -191,30 +316,6 @@ class YandexMusic:
         print(f"✓ saved token to {cls.TOKEN_FILE}")
         return cls(token)
 
-    def _session(self) -> aiohttp.ClientSession:
-        """A new aiohttp session with this token's Authorization header baked in."""
-        return aiohttp.ClientSession(headers={"Authorization": f"OAuth {self.token}"})
-
-    @classmethod
-    def _playlist_url(cls, uid: int, kind: str, suffix: str = "") -> str:
-        return f"{cls.API}/users/{uid}/playlists/{kind}{suffix}"
-
-    @classmethod
-    def _upload_url(cls, uid: int, kind: str, file_name: str) -> str:
-        encoded = urllib.parse.quote(file_name, safe="_!() ").replace(" ", "+")
-        return (
-            f"{cls.API}/loader/upload-url"
-            f"?uid={uid}&playlist-id={uid}:{kind}"
-            f"&visibility=private&path={encoded}"
-        )
-
-    @staticmethod
-    async def _ok_json(r: aiohttp.ClientResponse, label: str) -> dict:
-        """Raise if HTTP != 200, else return parsed JSON body."""
-        if r.status != 200:
-            raise RuntimeError(f"{label} failed: HTTP {r.status} {await r.text()}")
-        return await r.json()
-
     async def _ensure_client(self) -> ClientAsync:
         if self._client is None:
             self._client = await ClientAsync(self.token).init()
@@ -229,11 +330,18 @@ class YandexMusic:
         assert self._uid is not None
         return self._uid
 
-    async def list_playlists(self) -> list:
+    @asynccontextmanager
+    async def _api(self) -> AsyncGenerator[_Api]:
+        uid = await self.uid()
+        headers = {"Authorization": f"OAuth {self.token}"}
+        async with aiohttp.ClientSession(headers=headers) as s:
+            yield _Api(s, uid)
+
+    async def list_playlists(self) -> list[YmPlaylist]:
         c = await self._ensure_client()
         return await c.users_playlists_list()
 
-    async def create_playlist(self, title: str, public: bool):
+    async def create_playlist(self, title: str, public: bool) -> YmPlaylist:
         c = await self._ensure_client()
         pl = await c.users_playlists_create(
             title=title,
@@ -257,72 +365,27 @@ class YandexMusic:
         return str(pl.kind)
 
     async def set_playlist_cover(self, kind: str, cover: Cover) -> None:
-        uid = await self.uid()
-        async with self._session() as s:
-            form = aiohttp.FormData()
-            form.add_field("image", cover.data, filename="cover", content_type=cover.mime)
-            async with s.post(self._playlist_url(uid, kind, "/cover/upload"), data=form) as r:
-                await self._ok_json(r, "playlist cover upload")
+        async with self._api() as api:
+            await api.upload_cover(kind, cover)
+
+    async def fetch_playlist(self, kind: str) -> Playlist:
+        """Returns playlist `kind` with its tracks."""
+        async with self._api() as api:
+            return await api.fetch_playlist(kind)
 
     async def clear_playlist(self, kind: str) -> int:
-        """Remove every track from playlist `kind` via the /change endpoint.
-        Returns the number of tracks removed."""
-        uid = await self.uid()
-        async with self._session() as s:
-            async with s.get(self._playlist_url(uid, kind)) as r:
-                pl = (await self._ok_json(r, "playlist fetch"))["result"]
-            track_count = pl.get("trackCount", 0)
-            if not track_count:
+        """Removes every track from playlist `kind`. Returns the number of tracks removed."""
+        async with self._api() as api:
+            pl = await api.fetch_playlist(kind)
+            if not pl.track_count:
                 return 0
-            form = aiohttp.FormData()
-            form.add_field("kind", kind)
-            form.add_field("revision", str(pl["revision"]))
-            form.add_field("diff", json.dumps([{"op": "delete", "from": 0, "to": track_count}]))
-            async with s.post(self._playlist_url(uid, kind, "/change"), data=form) as r:
-                await self._ok_json(r, "playlist clear")
-        return track_count
+            await api.delete_tracks(kind, pl)
+        return pl.track_count
 
     async def playlist_track_titles(self, kind: str) -> set[str]:
-        """Fetch existing track titles in a playlist via raw API (the yandex_music
-        library currently crashes deserializing user-uploaded tracks)."""
-        uid = await self.uid()
-        async with self._session() as s, s.get(self._playlist_url(uid, kind)) as r:
-            data = await self._ok_json(r, "playlist fetch")
-        titles: set[str] = set()
-        for t in data.get("result", {}).get("tracks", []):
-            tr = t.get("track") or t
-            title = tr.get("title")
-            if title:
-                titles.add(title)
-        return titles
-
-    async def upload_one(
-        self,
-        session: aiohttp.ClientSession,
-        file_path: Path,
-        playlist_kind: str,
-    ) -> None:
-        uid = await self.uid()
-        file_name = file_path.name
-
-        async with session.post(self._upload_url(uid, playlist_kind, file_name)) as resp:
-            data = await self._ok_json(resp, "upload-url")
-
-        upload_url = data.get("post-target") or data.get("post_target")
-        if not upload_url:
-            raise RuntimeError(f"no upload URL in response: {data}")
-
-        form = aiohttp.FormData()
-        with open(file_path, "rb") as f:
-            form.add_field("file", f, filename=file_name)
-            async with session.post(
-                upload_url, data=form, timeout=aiohttp.ClientTimeout(total=600)
-            ) as up:
-                body = await up.text()
-                if up.status not in (200, 201):
-                    raise RuntimeError(f"upload HTTP {up.status}: {body}")
-                if "OK" not in body.upper() and "CREATED" not in body.upper():
-                    raise RuntimeError(f"upload returned {up.status} but unexpected body: {body!r}")
+        """Returns the titles of the tracks in playlist `kind`."""
+        pl = await self.fetch_playlist(kind)
+        return {t for item in pl.tracks if (t := item.effective_title)}
 
     async def upload_many(
         self, files: list[Path], playlist_kind: str, *, attempts: int = 4
@@ -331,14 +394,14 @@ class YandexMusic:
         # order to get caller-supplied order on display.
         # Storage backend intermittently returns HTTP 200 with an empty body —
         # retry transparently before giving up.
-        async with self._session() as session:
+        async with self._api() as api:
             for f in reversed(files):
                 for attempt in range(1, attempts + 1):
                     logger.info("→ uploading %s (playlist kind=%s)%s",
                                 f.name, playlist_kind,
                                 "" if attempt == 1 else f" [retry {attempt}/{attempts}]")
                     try:
-                        await self.upload_one(session, f, playlist_kind)
+                        await api.upload_one(f, playlist_kind)
                         break
                     except RuntimeError as e:
                         if attempt == attempts:
@@ -389,11 +452,8 @@ class Cli:
                 logger.info("already downloaded → %s (%d file(s); use --force to redo)",
                             dest, len(already))
                 return already
-        if not shutil.which("yt-dlp"):
-            raise click.ClickException("yt-dlp not found in PATH")
-        dest.mkdir(parents=True, exist_ok=True)
         cmd = [
-            "yt-dlp",
+            yt_dlp(),
             # Prefer m4a/aac: opus can't carry the embedded PNG cover through
             # ffmpeg's stream-copy chapter split (Unsupported codec id in stream 1).
             "-f", "bestaudio[ext=m4a]/bestaudio",
@@ -409,6 +469,7 @@ class Cli:
                 "-o", "chapter:" + str(dest / "%(section_number)02d - %(section_title)s.%(ext)s"),
             ]
         cmd.append(url)
+        dest.mkdir(parents=True, exist_ok=True)
         logger.info("Running: %s", " ".join(cmd))
         subprocess.run(cmd, check=True)
 
@@ -467,9 +528,9 @@ class Cli:
     async def clear_playlist(self, playlist: str, yes: bool) -> None:
         kind = await self.ym.resolve_or_create_playlist(playlist)
         if not yes:
-            existing = await self.ym.playlist_track_titles(kind)
+            pl = await self.ym.fetch_playlist(kind)
             if not click.confirm(
-                f"Remove {len(existing)} track(s) from playlist kind={kind}?",
+                f"Remove {pl.track_count} track(s) from playlist kind={kind}?",
                 default=False,
             ):
                 logger.info("aborted")
@@ -512,24 +573,24 @@ OUT_HELP = "output directory (default: ~/.cache/yt2ym/<videoid>/)"
 FORCE_HELP = "bypass idempotency: re-download, and wipe the playlist before re-uploading"
 
 
-def out_option(f):
+def out_option[F: Callable[..., Any]](f: F) -> F:
     return click.option(
         "--out", type=click.Path(path_type=Path, file_okay=False),
         default=None, help=OUT_HELP,
     )(f)
 
 
-def force_option(f):
+def force_option[F: Callable[..., Any]](f: F) -> F:
     return click.option("--force", is_flag=True, help=FORCE_HELP)(f)
 
 
-def playlist_option(*, required: bool = True, help_suffix: str = ""):
-    def deco(f):
-        return click.option(
-            "--playlist", required=required, default=None,
-            help=PLAYLIST_HELP + help_suffix,
-        )(f)
-    return deco
+def playlist_option[F: Callable[..., Any]](
+    *, required: bool = True, help_suffix: str = ""
+) -> Callable[[F], F]:
+    return click.option(
+        "--playlist", required=required, default=None,
+        help=PLAYLIST_HELP + help_suffix,
+    )
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
