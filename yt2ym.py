@@ -1,5 +1,5 @@
 """
-yt2ym — download YouTube audio (with chapter splitting) and upload to Yandex Music.
+yt2ym — download audio (YouTube, X, any yt-dlp site) and upload to Yandex Music.
 
 Run via:  uv run yt2ym.py <subcommand> ...
 
@@ -49,7 +49,7 @@ class VideoMeta:
 # --- pure helpers (audio / paths / yt-dlp) -----------------------------------
 
 
-def probe_youtube(url: str) -> VideoMeta:
+def probe_url(url: str) -> VideoMeta:
     """Fetch video id + title from yt-dlp without downloading."""
     r = subprocess.run(
         ["yt-dlp", "--print", "%(id)s", "--print", "%(title)s",
@@ -409,7 +409,7 @@ class Cli:
 
     def _download_to(self, url: str, dest: Path, split_chapters: bool, force: bool) -> list[Path]:
         """Run yt-dlp into `dest`, tag chapter files. Skip if audio files already
-        present (unless `force`). Uses YouTube's native m4a/aac (no transcoding)."""
+        present (unless `force`). Uses the source's native m4a/aac (no transcoding)."""
         if not force:
             already = existing_audio(dest, split_chapters)
             if already:
@@ -505,7 +505,7 @@ class Cli:
         logger.info("cleared %d track(s) from playlist kind=%s", cleared, kind)
 
     def download(self, url: str, out: Path | None, split_chapters: bool, force: bool) -> list[Path]:
-        dest = out or default_cache_dir(probe_youtube(url).id)
+        dest = out or default_cache_dir(probe_url(url).id)
         return self._download_to(url, dest, split_chapters, force)
 
     async def upload(self, path: Path, playlist: str, force: bool) -> None:
@@ -520,7 +520,7 @@ class Cli:
         """Download (single track or chaptered) → resolve/create playlist →
         upload → set cover from the first track. With `split_chapters` and no
         explicit playlist, defaults the playlist name to the video title."""
-        probe = probe_youtube(url)
+        probe = probe_url(url)
         dest = out or default_cache_dir(probe.id)
         playlist_name = playlist or (probe.title if split_chapters else None)
         if playlist_name is None:
@@ -563,7 +563,7 @@ def playlist_option(*, required: bool = True, help_suffix: str = ""):
 @click.option("--token", envvar="YANDEX_MUSIC_TOKEN", default=None, help=TOKEN_HELP)
 @click.pass_context
 async def cli(ctx: click.Context, token: str | None) -> None:
-    """yt2ym — download YouTube audio and upload to Yandex Music."""
+    """yt2ym — download YouTube/X/any yt-dlp-supported audio and upload to Yandex Music."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     ctx.obj = Cli(token)
 
@@ -607,7 +607,7 @@ async def set_cover(c: Cli, playlist: str, source: Path) -> None:
     await c.set_cover(playlist, source)
 
 
-@cli.command(help="download YouTube audio (splits by chapters if present)")
+@cli.command(help="download audio (splits by chapters if present)")
 @click.argument("url")
 @click.option("--single", is_flag=True, help="don't split chapters (download as one file)")
 @out_option
@@ -626,7 +626,7 @@ async def upload(c: Cli, path: Path, playlist: str, force: bool) -> None:
     await c.upload(path, playlist, force)
 
 
-@cli.command(help="download a YouTube video as a single track and upload it")
+@cli.command(help="download a video as a single track and upload it")
 @click.argument("url")
 @playlist_option()
 @out_option
@@ -638,7 +638,7 @@ async def sync(c: Cli, url: str, playlist: str, out: Path | None, force: bool) -
 
 @cli.command(
     "sync-album",
-    help="download a chaptered YouTube video and upload each chapter as a track. "
+    help="download a chaptered video and upload each chapter as a track. "
          "Default playlist = video title (created if missing).",
 )
 @click.argument("url")

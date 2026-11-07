@@ -1,7 +1,7 @@
 [project]
 name = "yt2ym"
 version = "0.1.0"
-description = "Download YouTube audio with chapter splitting and upload to Yandex Music"
+description = "Download YouTube (or any yt-dlp-supported site) audio with chapter splitting and upload to Yandex Music"
 requires-python = ">=3.11"
 dependencies = [
     "aiohttp>=3.9",

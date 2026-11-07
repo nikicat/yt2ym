@@ -5,7 +5,7 @@
 [![uv](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/uv/main/assets/badge/v0.json)](https://github.com/astral-sh/uv)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-Download YouTube audio (with chapter splitting) and upload it to Yandex Music as a playlist — with proper titles, track numbers, and album cover.
+Download audio from YouTube, X, or [any site yt-dlp supports](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md) (with chapter splitting) and upload it to Yandex Music as a playlist — with proper titles, track numbers, and album cover.
 
 ## Install / run
 
@@ -36,7 +36,7 @@ This runs the OAuth 2.0 **device flow** against Yandex: it prints a short user-c
 | `set-cover PLAYLIST PATH` | Set a playlist's cover from an mp3/m4a (embedded cover) or image. |
 | `download URL [--out DIR] [--single] [--force]` | Download audio to `~/.cache/yt2ym/<videoid>/`, splitting by chapters if present. |
 | `upload PATH --playlist X [--force]` | Upload an mp3/m4a file or directory of them. |
-| `sync URL --playlist X [--force]` | Download a YouTube video as a single track and upload it. |
+| `sync URL --playlist X [--force]` | Download a video as a single track and upload it. |
 | `sync-album URL [--playlist X] [--force]` | Download a chaptered video and upload each chapter as a track; playlist name defaults to the video title (created if missing). |
 
 `--playlist` accepts a numeric `kind` id (e.g. `3` = Liked) **or** a playlist name. Names are looked up; if missing, a new private playlist is created. Required on `upload` and `sync`; defaults to the video title on `sync-album`.
