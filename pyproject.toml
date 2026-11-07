@@ -7,7 +7,7 @@ dependencies = [
     "aiohttp>=3.9",
     "asyncclick>=8.3.0.7",
     "mutagen>=1.47.0",
-    "yandex-music>=2,<3",
+    "yandex-music>=2,<4",
 ]
 
 [project.scripts]

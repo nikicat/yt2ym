@@ -3,15 +3,6 @@ revision = 5
 requires-python = ">=3.11"
 
 [[package]]
-name = "aiofiles"
-version = "25.1.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/41/c3/534eac40372d8ee36ef40df62ec129bee4fdb5ad9706e58a29be53b2c970/aiofiles-25.1.0.tar.gz", hash = "sha256:a8d728f0a29de45dc521f18f07297428d56992a742f0cd2701ba86e44d23d5b2", size = 46354, upload-time = "2025-10-09T20:51:04.358Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/bc/8a/340a1555ae33d7354dbca4faa54948d76d89a27ceef032c8c3bc661d003e/aiofiles-25.1.0-py3-none-any.whl", hash = "sha256:abe311e527c862958650f9438e859c1fa7568a141b22abcd015e120e86a85695", size = 14668, upload-time = "2025-10-09T20:51:03.174Z" },
-]
-
-[[package]]
 name = "aiohappyeyeballs"
 version = "2.7.1"
 source = { registry = "https://pypi.org/simple" }
@@ -889,14 +880,16 @@ wheels = [
 
 [[package]]
 name = "yandex-music"
-version = "2.2.0"
+version = "3.2.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "aiofiles" },
-    { name = "aiohttp" },
     { name = "requests", extra = ["socks"] },
+    { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/42/85/9f1d9e1327b558d74ee43e3d3f84b7b7e536c79a372cf83fcbf392ab2d3c/yandex-music-2.2.0.tar.gz", hash = "sha256:46beaacf8206de212323264c89e0bd4f4e2e626483dfa58f95e78cacd1a102cf", size = 168538, upload-time = "2023-12-24T21:28:08.382Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/fe/a0/69ea55bdff91f2e4a996d08ce89402e56be46a6c7a9ac5d9a9c5e76436ee/yandex_music-3.2.2.tar.gz", hash = "sha256:eb0b4240521ce2d04fff876c9dada7ece6545937997ba120fcfaa813ef8256b2", size = 344503, upload-time = "2026-10-10T23:47:56.716Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/78/3d/4735a1171d293e6b4bb46e5f271cd4d62f6b74f5c28c494afa99a720df44/yandex_music-3.2.2-py3-none-any.whl", hash = "sha256:f2e603530c74a4affd2bead6f42e7b17c5e83732a2dda752206ef6c0d3dbf515", size = 412799, upload-time = "2026-10-10T23:47:54.812Z" },
+]
 
 [[package]]
 name = "yarl"
@@ -1052,7 +1045,7 @@ requires-dist = [
     { name = "aiohttp", specifier = ">=3.9" },
     { name = "asyncclick", specifier = ">=8.3.0.7" },
     { name = "mutagen", specifier = ">=1.47.0" },
-    { name = "yandex-music", specifier = ">=2,<3" },
+    { name = "yandex-music", specifier = ">=2,<4" },
 ]
 
 [package.metadata.requires-dev]
