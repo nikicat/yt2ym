@@ -14,13 +14,13 @@ Requires [uv](https://github.com/astral-sh/uv) and ffmpeg on `$PATH`. yt2ym uses
 ```bash
 git clone https://github.com/nikicat/yt2ym
 cd yt2ym
-uv run yt2ym.py --help
+uv run yt2ym --help
 ```
 
 ## First-time setup
 
 ```bash
-uv run yt2ym.py login
+uv run yt2ym login
 ```
 
 This runs the OAuth 2.0 **device flow** against Yandex: it prints a short user-code, you open the URL in a browser, approve, and the token gets saved to `~/.config/yt2ym/token` (0600). You can also pass `--token`, set `$YANDEX_MUSIC_TOKEN`, or place the token in that file manually.
@@ -46,7 +46,7 @@ This runs the OAuth 2.0 **device flow** against Yandex: it prints a short user-c
 ```bash
 # All-in-one: download "Complete SUNDER OST", create a playlist of the same name,
 # tag each chapter properly, upload them in correct order, set the album cover.
-uv run yt2ym.py sync-album https://www.youtube.com/watch?v=AJK4eo2PwQY
+uv run yt2ym sync-album https://www.youtube.com/watch?v=AJK4eo2PwQY
 ```
 
 Re-run the same command and it's a no-op: yt2ym checks both the local cache and the Yandex playlist before doing anything. Pass `--replace` to empty the playlist and upload everything again.

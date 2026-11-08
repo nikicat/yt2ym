@@ -42,7 +42,7 @@ jobs:
       - name: pytest
         run: uv run pytest
       - name: CLI help loads
-        run: uv run yt2ym.py --help
+        run: uv run yt2ym --help
 
   zizmor:
     runs-on: ubuntu-latest

@@ -4,16 +4,11 @@ from typing import Any, Self
 import asyncclick as click
 import pytest
 
-import yt2ym
-from yt2ym import (
-    Chapter,
-    PlaylistResponse,
-    UploadTarget,
-    collect_audio,
-    download_audio,
-    existing_audio,
-    file_title,
-)
+from yt2ym import media
+from yt2ym.cli import parse_playlist
+from yt2ym.media import Chapter, collect_audio, download_audio, existing_audio, file_title
+from yt2ym.types import MediaUrl, PlaylistKind, PlaylistRef, PlaylistTitle, TrackNumber, TrackTitle
+from yt2ym.yandex import PlaylistResponse, UploadTarget
 
 
 @pytest.mark.parametrize("name,num,title", [
@@ -22,7 +17,7 @@ from yt2ym import (
     ("03-Trimmed.mp3", 3, "Trimmed"),
 ])
 def test_chapter_parse(name: str, num: int, title: str):
-    assert Chapter.parse(Path(name)) == Chapter(yt2ym.TrackNumber(num), yt2ym.TrackTitle(title))
+    assert Chapter.parse(Path(name)) == Chapter(TrackNumber(num), TrackTitle(title))
 
 
 @pytest.mark.parametrize("name", [
@@ -36,7 +31,7 @@ def test_chapter_parse_rejects(name: str):
 
 def test_chapter_outtmpl_round_trips():
     name = Chapter.OUTTMPL % {"section_number": 7, "section_title": "A - B", "ext": "m4a"}
-    assert Chapter.parse(Path(name)) == Chapter(yt2ym.TrackNumber(7), yt2ym.TrackTitle("A - B"))
+    assert Chapter.parse(Path(name)) == Chapter(TrackNumber(7), TrackTitle("A - B"))
 
 
 def test_collect_audio_file(tmp_path: Path):
@@ -111,7 +106,7 @@ def test_playlist_repeats():
         '{"title": "a"}, {"track": {"title": "b"}}, {"title": "a"}, {"title": "x"},'
         ' {"title": "x"}, {"track": {"title": "b"}}]}}'
     ).result
-    assert pl.repeats({yt2ym.TrackTitle("a"), yt2ym.TrackTitle("b")}) == [2, 5]
+    assert pl.repeats({TrackTitle("a"), TrackTitle("b")}) == [2, 5]
 
 
 @pytest.mark.parametrize("key", ["post-target", "post_target"])
@@ -119,7 +114,7 @@ def test_upload_target_accepts_both_spellings(key: str):
     assert UploadTarget.model_validate_json(f'{{"{key}": "u"}}').post_target == "u"
 
 
-URL = yt2ym.MediaUrl("https://example.com/v")
+URL = MediaUrl("https://example.com/v")
 
 
 class FakeYoutubeDL:
@@ -140,7 +135,7 @@ class FakeYoutubeDL:
 
 
 def test_download_audio_split_chapters_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(yt2ym, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
     download_audio(URL, tmp_path, split_chapters=True, overwrite=False)
     params = FakeYoutubeDL.params
     chapter = tmp_path / Chapter.OUTTMPL
@@ -152,13 +147,13 @@ def test_download_audio_split_chapters_options(tmp_path: Path, monkeypatch: pyte
 def test_download_audio_overwrite(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overwrite: bool
 ):
-    monkeypatch.setattr(yt2ym, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
     download_audio(URL, tmp_path, split_chapters=False, overwrite=overwrite)
     assert FakeYoutubeDL.params.get("overwrites") is (True if overwrite else None)
 
 
 def test_download_audio_failure_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(yt2ym, "YoutubeDL", FakeYoutubeDL)
+    monkeypatch.setattr(media, "YoutubeDL", FakeYoutubeDL)
     monkeypatch.setattr(FakeYoutubeDL, "retcode", 1)
     with pytest.raises(click.ClickException):
         download_audio(URL, tmp_path, split_chapters=False, overwrite=False)
@@ -167,19 +162,19 @@ def test_download_audio_failure_raises(tmp_path: Path, monkeypatch: pytest.Monke
 def test_probe_url_reports_yt_dlp_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     class FailingYoutubeDL(FakeYoutubeDL):
         def extract_info(self, url: str, download: bool = True) -> dict[str, Any] | None:
-            raise yt2ym.DownloadError("ERROR: Unsupported URL")
+            raise media.DownloadError("ERROR: Unsupported URL")
 
-    monkeypatch.setattr(yt2ym, "YoutubeDL", FailingYoutubeDL)
+    monkeypatch.setattr(media, "YoutubeDL", FailingYoutubeDL)
     with pytest.raises(click.ClickException, match="failed to probe"):
-        yt2ym.probe_url(URL)
+        media.probe_url(URL)
 
 
 def test_parse_playlist() -> None:
-    def parse(value: str) -> yt2ym.PlaylistRef | None:
-        return yt2ym.parse_playlist(None, None, value)  # type: ignore[arg-type]
+    def parse(value: str) -> PlaylistRef | None:
+        return parse_playlist(None, None, value)  # type: ignore[arg-type]
 
-    assert parse("3") == yt2ym.PlaylistKind(3)
-    assert isinstance(parse("3"), yt2ym.PlaylistKind)
+    assert parse("3") == PlaylistKind(3)
+    assert isinstance(parse("3"), PlaylistKind)
     for title in ["Mix 3", "²"]:
         assert parse(title) == title
-        assert isinstance(parse(title), yt2ym.PlaylistTitle)
+        assert isinstance(parse(title), PlaylistTitle)
