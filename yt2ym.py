@@ -593,22 +593,28 @@ class Cli:
             return
         await self.ym.upload_many(to_upload, kind)
 
-    async def _set_cover_from(self, kind: PlaylistKind, source: Path) -> None:
-        cover = extract_cover(source)
-        if not cover:
-            logger.info("no APIC cover in %s; skipping playlist cover", source.name)
-            return
+    async def _put_cover(self, kind: PlaylistKind, cover: Cover, source: Path) -> None:
         await self.ym.set_playlist_cover(kind, cover)
-        logger.info("set playlist cover (%d bytes, %s) from %s",
-                    len(cover.data), cover.mime, source.name)
+        logger.info("set playlist kind=%s cover (%d bytes, %s) from %s",
+                    kind, len(cover.data), cover.mime, source.name)
+
+    async def _set_cover_from(self, kind: PlaylistKind, source: Path) -> None:
+        """Sets the cover of playlist `kind` from the cover embedded in `source`, if it has one."""
+        if cover := extract_cover(source):
+            await self._put_cover(kind, cover, source)
+        else:
+            logger.info("no embedded cover in %s; skipping playlist cover", source.name)
 
     async def set_cover(self, playlist: PlaylistRef, source: Path) -> None:
+        """Sets the cover of `playlist` from an image, or from an audio file's embedded cover.
+
+        Errors with click.ClickException when an audio file has no embedded cover.
+        """
         kind = await self.ym.resolve_playlist(playlist)
-        if is_audio(source):
-            await self._set_cover_from(kind, source)
-            return
-        await self.ym.set_playlist_cover(kind, Cover(source.read_bytes()))
-        logger.info("set playlist kind=%s cover from %s", kind, source.name)
+        cover = extract_cover(source) if is_audio(source) else Cover(source.read_bytes())
+        if cover is None:
+            raise click.ClickException(f"no embedded cover in {source}")
+        await self._put_cover(kind, cover, source)
 
     async def clear_playlist(self, playlist: PlaylistRef, yes: bool) -> None:
         kind = await self.ym.resolve_playlist(playlist)
