@@ -158,10 +158,11 @@ def probe_url(url: MediaUrl) -> VideoMeta:
             raise click.ClickException(f"yt-dlp failed to probe {url}: {e}") from e
 
 
-def download_audio(url: MediaUrl, dest: Path, split_chapters: bool) -> None:
+def download_audio(url: MediaUrl, dest: Path, split_chapters: bool, *, overwrite: bool) -> None:
     """Downloads the audio of `url` into `dest`.
 
-    With `split_chapters`, it also writes one file per chapter next to it.
+    With `split_chapters`, it also writes the files that Chapter.files_in lists. With
+    `overwrite`, it downloads again files that `dest` already holds.
 
     Errors with click.ClickException when yt-dlp fails.
     """
@@ -177,6 +178,8 @@ def download_audio(url: MediaUrl, dest: Path, split_chapters: bool) -> None:
         "--embed-thumbnail",
         "-o", str(dest / "%(title)s.%(ext)s"),
     ]
+    if overwrite:
+        args.append("--force-overwrites")
     if split_chapters:
         args += [
             "--split-chapters",
@@ -274,21 +277,21 @@ def write_title_track(path: Path, title: TrackTitle, track: int) -> None:
 
 
 def download_to(
-    url: MediaUrl, dest: Path, split_chapters: bool, force: bool
+    url: MediaUrl, dest: Path, split_chapters: bool, *, redownload: bool
 ) -> list[Path]:
     """Returns the audio files of `url` in `dest`, and downloads them when `dest` holds none.
 
     With `split_chapters`, the files are the chapters, each tagged with its title and number.
-    With `force`, it downloads again even when `dest` holds the files. Errors with
+    With `redownload`, it downloads again even when `dest` holds the files. Errors with
     click.ClickException when yt-dlp fails or produces no audio.
     """
-    if not force:
+    if not redownload:
         already = existing_audio(dest, split_chapters)
         if already:
-            logger.info("already downloaded → %s (%d file(s); use --force to redo)",
+            logger.info("already downloaded → %s (%d file(s); use --redownload to redo)",
                         dest, len(already))
             return already
-    download_audio(url, dest, split_chapters)
+    download_audio(url, dest, split_chapters, overwrite=redownload)
 
     # yt-dlp's --embed-metadata writes no per-chapter title or track number,
     # so each chapter file gets them from its file name.
@@ -576,12 +579,14 @@ class Cli:
         pl = await self.ym.create_playlist(title, visibility)
         print(f"created: kind={pl.kind} title={pl.title!r} visibility={visibility}")
 
-    async def _upload_files(self, files: list[Path], kind: PlaylistKind, force: bool) -> None:
+    async def _upload_files(
+        self, files: list[Path], kind: PlaylistKind, *, replace: bool
+    ) -> None:
         """Uploads to playlist `kind` each of `files` whose title the playlist does not hold.
 
-        With `force`, it removes every track from the playlist and uploads all of `files`.
+        With `replace`, it removes every track from the playlist and uploads all of `files`.
         """
-        if force:
+        if replace:
             cleared = await self.ym.clear_playlist(kind)
             if cleared:
                 logger.info("cleared %d track(s) from playlist kind=%s", cleared, kind)
@@ -592,7 +597,7 @@ class Cli:
             skipped = len(files) - len(to_upload)
             if skipped:
                 logger.info("skipping %d file(s) already in playlist kind=%s "
-                            "(use --force to redo)", skipped, kind)
+                            "(use --replace to upload them again)", skipped, kind)
         if not to_upload:
             logger.info("nothing to upload to kind=%s", kind)
             return
@@ -634,18 +639,29 @@ class Cli:
         cleared = await self.ym.clear_playlist(kind)
         logger.info("cleared %d track(s) from playlist kind=%s", cleared, kind)
 
-    def download(self, url: MediaUrl, out: Path | None, split_chapters: bool, force: bool) -> None:
-        download_to(url, out or default_cache_dir(probe_url(url).id), split_chapters, force)
+    def download(
+        self, url: MediaUrl, out: Path | None, split_chapters: bool, *, redownload: bool
+    ) -> None:
+        dest = out or default_cache_dir(probe_url(url).id)
+        download_to(url, dest, split_chapters, redownload=redownload)
 
-    async def upload(self, path: Path, playlist: PlaylistRef, force: bool) -> None:
+    async def upload(self, path: Path, playlist: PlaylistRef, *, replace: bool) -> None:
         files = collect_audio(path)
         if not files:
             raise click.ClickException(f"no audio files at {path}")
         kind = await self.ym.resolve_or_create_playlist(playlist)
-        await self._upload_files(files, kind, force)
+        await self._upload_files(files, kind, replace=replace)
 
-    async def sync(self, url: MediaUrl, playlist: PlaylistRef | None, out: Path | None,
-                   force: bool, *, split_chapters: bool) -> None:
+    async def sync(
+        self,
+        url: MediaUrl,
+        playlist: PlaylistRef | None,
+        out: Path | None,
+        *,
+        split_chapters: bool,
+        redownload: bool,
+        replace: bool,
+    ) -> None:
         """Uploads the audio of `url` to `playlist`, and sets the playlist's cover from it.
 
         A title that no playlist has gets a new private playlist. With `split_chapters`, each
@@ -660,8 +676,8 @@ class Cli:
             playlist = PlaylistTitle(probe.title)
             logger.info("using video title as playlist name: %r", playlist)
         kind = await self.ym.resolve_or_create_playlist(playlist)
-        files = download_to(url, dest, split_chapters, force)
-        await self._upload_files(files, kind, force)
+        files = download_to(url, dest, split_chapters, redownload=redownload)
+        await self._upload_files(files, kind, replace=replace)
         await self._set_cover_from(kind, files[0])
 
 
@@ -685,7 +701,6 @@ TOKEN_HELP = (
     f"else ~/{YandexMusic.TOKEN_FILE.relative_to(Path.home())})"
 )
 OUT_HELP = "output directory (default: $XDG_CACHE_HOME/yt2ym/<videoid>/, or ~/.cache/yt2ym/…)"
-FORCE_HELP = "bypass idempotency: re-download, and wipe the playlist before re-uploading"
 
 
 def out_option[F: Callable[..., Any]](f: F) -> F:
@@ -695,8 +710,17 @@ def out_option[F: Callable[..., Any]](f: F) -> F:
     )(f)
 
 
-def force_option[F: Callable[..., Any]](f: F) -> F:
-    return click.option("--force", is_flag=True, help=FORCE_HELP)(f)
+def redownload_option[F: Callable[..., Any]](f: F) -> F:
+    return click.option(
+        "--redownload", is_flag=True, help="download again even when the cache has the audio"
+    )(f)
+
+
+def replace_option[F: Callable[..., Any]](f: F) -> F:
+    return click.option(
+        "--replace", is_flag=True,
+        help="remove every track from the playlist, then upload all files",
+    )(f)
 
 
 def playlist_option[F: Callable[..., Any]](
@@ -762,29 +786,37 @@ async def set_cover(c: Cli, playlist: PlaylistRef, source: Path) -> None:
 @click.argument("url", type=MediaUrl)
 @click.option("--single", is_flag=True, help="don't split chapters (download as one file)")
 @out_option
-@force_option
+@redownload_option
 @click.pass_obj
-async def download(c: Cli, url: MediaUrl, single: bool, out: Path | None, force: bool) -> None:
-    c.download(url, out, split_chapters=not single, force=force)
+async def download(
+    c: Cli, url: MediaUrl, single: bool, out: Path | None, redownload: bool
+) -> None:
+    c.download(url, out, split_chapters=not single, redownload=redownload)
 
 
 @cli.command(help="upload an audio file (mp3/m4a) or directory to Yandex Music")
 @click.argument("path", type=click.Path(exists=True, path_type=Path))
 @playlist_option()
-@force_option
+@replace_option
 @click.pass_obj
-async def upload(c: Cli, path: Path, playlist: PlaylistRef, force: bool) -> None:
-    await c.upload(path, playlist, force)
+async def upload(c: Cli, path: Path, playlist: PlaylistRef, replace: bool) -> None:
+    await c.upload(path, playlist, replace=replace)
 
 
 @cli.command(help="download a video as a single track and upload it")
 @click.argument("url", type=MediaUrl)
 @playlist_option()
 @out_option
-@force_option
+@redownload_option
+@replace_option
 @click.pass_obj
-async def sync(c: Cli, url: MediaUrl, playlist: PlaylistRef, out: Path | None, force: bool) -> None:
-    await c.sync(url, playlist, out, force, split_chapters=False)
+async def sync(
+    c: Cli, url: MediaUrl, playlist: PlaylistRef, out: Path | None, redownload: bool,
+    replace: bool,
+) -> None:
+    await c.sync(
+        url, playlist, out, split_chapters=False, redownload=redownload, replace=replace
+    )
 
 
 @cli.command(
@@ -795,12 +827,16 @@ async def sync(c: Cli, url: MediaUrl, playlist: PlaylistRef, out: Path | None, f
 @click.argument("url", type=MediaUrl)
 @playlist_option(required=False, help_suffix=" Defaults to the video title.")
 @out_option
-@force_option
+@redownload_option
+@replace_option
 @click.pass_obj
 async def sync_album(
-    c: Cli, url: MediaUrl, playlist: PlaylistRef | None, out: Path | None, force: bool
+    c: Cli, url: MediaUrl, playlist: PlaylistRef | None, out: Path | None, redownload: bool,
+    replace: bool,
 ) -> None:
-    await c.sync(url, playlist, out, force, split_chapters=True)
+    await c.sync(
+        url, playlist, out, split_chapters=True, redownload=redownload, replace=replace
+    )
 
 
 if __name__ == "__main__":

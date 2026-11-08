@@ -34,10 +34,10 @@ This runs the OAuth 2.0 **device flow** against Yandex: it prints a short user-c
 | `create-playlist TITLE [--public]` | Create a new playlist (private by default). |
 | `clear-playlist PLAYLIST [--yes]` | Remove every track from a playlist. |
 | `set-cover PLAYLIST PATH` | Set a playlist's cover from an mp3/m4a (embedded cover) or image. |
-| `download URL [--out DIR] [--single] [--force]` | Download audio to `$XDG_CACHE_HOME/yt2ym/<videoid>/` (`~/.cache/yt2ym/<videoid>/` by default), splitting by chapters if present. |
-| `upload PATH --playlist X [--force]` | Upload an mp3/m4a file or directory of them. |
-| `sync URL --playlist X [--force]` | Download a video as a single track and upload it. |
-| `sync-album URL [--playlist X] [--force]` | Download a chaptered video and upload each chapter as a track; the playlist defaults to the video title. |
+| `download URL [--out DIR] [--single] [--redownload]` | Download audio to `$XDG_CACHE_HOME/yt2ym/<videoid>/` (`~/.cache/yt2ym/<videoid>/` by default), splitting by chapters if present. |
+| `upload PATH --playlist X [--replace]` | Upload an mp3/m4a file or directory of them. |
+| `sync URL --playlist X [--redownload] [--replace]` | Download a video as a single track and upload it. |
+| `sync-album URL [--playlist X] [--redownload] [--replace]` | Download a chaptered video and upload each chapter as a track; the playlist defaults to the video title. |
 
 `--playlist` accepts a numeric `kind` id (e.g. `3` = Liked) **or** a playlist name. Names are looked up; `upload`, `sync` and `sync-album` create a missing one as a private playlist, and the other commands error.
 
@@ -49,7 +49,7 @@ This runs the OAuth 2.0 **device flow** against Yandex: it prints a short user-c
 uv run yt2ym.py sync-album https://www.youtube.com/watch?v=AJK4eo2PwQY
 ```
 
-Re-run the same command and it's a no-op: yt2ym checks both the local cache and the Yandex playlist before doing anything. Pass `--force` to wipe the playlist and re-upload.
+Re-run the same command and it's a no-op: yt2ym checks both the local cache and the Yandex playlist before doing anything. Pass `--replace` to empty the playlist and upload everything again.
 
 ## How it works
 
@@ -59,7 +59,8 @@ Re-run the same command and it's a no-op: yt2ym checks both the local cache and 
 - **Idempotency** is state-based:
   - Download skips if expected audio files already exist in the cache dir.
   - Upload fetches the target playlist's track titles and only uploads files whose title isn't already there.
-  - `--force` bypasses both (and wipes the playlist before re-uploading).
+  - `--redownload` downloads again even when the cache has the audio.
+  - `--replace` removes every track from the playlist, then uploads all files.
 - **Cache layout**: `$XDG_CACHE_HOME/yt2ym/<videoid>/` (default `~/.cache/yt2ym/<videoid>/`) per video. Override with `--out`.
 
 ## Token / credentials

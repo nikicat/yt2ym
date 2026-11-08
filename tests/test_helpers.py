@@ -132,18 +132,27 @@ class FakeYoutubeDL:
 
 def test_download_audio_split_chapters_options(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(yt2ym, "YoutubeDL", FakeYoutubeDL)
-    download_audio(URL, tmp_path, split_chapters=True)
+    download_audio(URL, tmp_path, split_chapters=True, overwrite=False)
     params = FakeYoutubeDL.params
     chapter = tmp_path / Chapter.OUTTMPL
     assert params["outtmpl"]["chapter"] == str(chapter)
     assert any(pp["key"] == "FFmpegSplitChapters" for pp in params["postprocessors"])
 
 
+@pytest.mark.parametrize("overwrite", [False, True])
+def test_download_audio_overwrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overwrite: bool
+):
+    monkeypatch.setattr(yt2ym, "YoutubeDL", FakeYoutubeDL)
+    download_audio(URL, tmp_path, split_chapters=False, overwrite=overwrite)
+    assert FakeYoutubeDL.params.get("overwrites") is (True if overwrite else None)
+
+
 def test_download_audio_failure_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(yt2ym, "YoutubeDL", FakeYoutubeDL)
     monkeypatch.setattr(FakeYoutubeDL, "retcode", 1)
     with pytest.raises(click.ClickException):
-        download_audio(URL, tmp_path, split_chapters=False)
+        download_audio(URL, tmp_path, split_chapters=False, overwrite=False)
 
 
 def test_probe_url_reports_yt_dlp_errors(monkeypatch: pytest.MonkeyPatch) -> None:
