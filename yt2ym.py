@@ -230,9 +230,10 @@ def extract_cover(path: Path) -> Cover | None:
 
 
 def file_title(path: Path) -> TrackTitle:
-    """Title used when comparing to Yandex playlist tracks. Prefers the
-    format's title tag; falls back to the filename (with extension) — that's
-    what Yandex displays when no tag is present."""
+    """Returns the title that Yandex Music shows for `path` once it is uploaded.
+
+    That is the file's title tag, or the file name with its extension when there is no tag.
+    """
     try:
         suffix = path.suffix.lower()
         if suffix == ".mp3":
@@ -270,8 +271,12 @@ def write_title_track(path: Path, title: TrackTitle, track: int) -> None:
 def download_to(
     url: MediaUrl, dest: Path, split_chapters: bool, force: bool
 ) -> list[Path]:
-    """Run yt-dlp into `dest`, tag chapter files. Skip if audio files already
-    present (unless `force`). Uses the source's native m4a/aac (no transcoding)."""
+    """Returns the audio files of `url` in `dest`, and downloads them when `dest` holds none.
+
+    With `split_chapters`, the files are the chapters, each tagged with its title and number.
+    With `force`, it downloads again even when `dest` holds the files. Errors with
+    click.ClickException when yt-dlp fails or produces no audio.
+    """
     if not force:
         already = existing_audio(dest, split_chapters)
         if already:
@@ -388,7 +393,7 @@ class _Account:
 
 
 class YandexMusic:
-    """Yandex Music OAuth token + lazy client + upload operations."""
+    """The only way the tool talks to Yandex Music, as the account that owns the token."""
 
     TOKEN_FILE = Path.home() / ".config" / "yt2ym" / "token"
 
@@ -409,14 +414,17 @@ class YandexMusic:
 
     @classmethod
     async def login(cls) -> YandexMusic:
-        """OAuth 2.0 device flow (yandex-music's built-in Smart TV client) → save
-        token → return ready instance."""
+        """Logs in through the browser, and returns a YandexMusic with the new token.
+
+        It saves the token to TOKEN_FILE. Errors with click.ClickException when the login fails.
+        """
 
         def show(code: DeviceCode) -> None:
             print(f"\n  Open: {code.verification_url}")
             print(f"  Enter code: {code.user_code}\n  Waiting for approval...\n")
 
         try:
+            # The OAuth device flow, with yandex-music's built-in Smart TV client.
             token = Token((await ClientAsync().device_auth(on_code=show)).access_token)
         except DeviceAuthError as e:
             raise click.ClickException(f"oauth failed: {e}") from e
@@ -540,7 +548,10 @@ class YandexMusic:
 
 
 class Cli:
-    """Thin orchestration layer: subcommand methods, owns a lazy YandexMusic."""
+    """Runs the subcommands on the downloader and on YandexMusic.
+
+    It reads the token only when a subcommand first needs Yandex Music.
+    """
 
     def __init__(self, token_arg: str | None) -> None:
         self._token_arg = token_arg
@@ -561,9 +572,10 @@ class Cli:
         print(f"created: kind={pl.kind} title={pl.title!r} visibility={visibility}")
 
     async def _upload_files(self, files: list[Path], kind: PlaylistKind, force: bool) -> None:
-        """Upload `files` to playlist `kind`. Normally skips any whose title is
-        already in the playlist. With `force`, first wipes the playlist clean,
-        then uploads everything."""
+        """Uploads to playlist `kind` each of `files` whose title the playlist does not hold.
+
+        With `force`, it removes every track from the playlist and uploads all of `files`.
+        """
         if force:
             cleared = await self.ym.clear_playlist(kind)
             if cleared:
@@ -623,9 +635,12 @@ class Cli:
 
     async def sync(self, url: MediaUrl, playlist: PlaylistRef | None, out: Path | None,
                    force: bool, *, split_chapters: bool) -> None:
-        """Download (single track or chaptered) → resolve/create playlist →
-        upload → set cover from the first track. With `split_chapters` and no
-        explicit playlist, defaults the playlist name to the video title."""
+        """Uploads the audio of `url` to `playlist`, and sets the playlist's cover from it.
+
+        A title that no playlist has gets a new private playlist. With `split_chapters`, each
+        chapter is one track, and `playlist` defaults to the video title. Errors with
+        click.ClickException when `playlist` is None without `split_chapters`.
+        """
         probe = probe_url(url)
         dest = out or default_cache_dir(probe.id)
         if playlist is None:

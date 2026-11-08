@@ -32,14 +32,14 @@ This runs the OAuth 2.0 **device flow** against Yandex: it prints a short user-c
 | `login` | OAuth device flow → save token. |
 | `playlists` | List your playlists with their `kind` ids. |
 | `create-playlist TITLE [--public]` | Create a new playlist (private by default). |
-| `clear-playlist PLAYLIST [--yes]` | Remove every track from a playlist (by `kind` or name; errors on an unknown name). |
-| `set-cover PLAYLIST PATH` | Set a playlist's cover from an mp3/m4a (embedded cover) or image (errors on an unknown name). |
+| `clear-playlist PLAYLIST [--yes]` | Remove every track from a playlist. |
+| `set-cover PLAYLIST PATH` | Set a playlist's cover from an mp3/m4a (embedded cover) or image. |
 | `download URL [--out DIR] [--single] [--force]` | Download audio to `$XDG_CACHE_HOME/yt2ym/<videoid>/` (`~/.cache/yt2ym/<videoid>/` by default), splitting by chapters if present. |
 | `upload PATH --playlist X [--force]` | Upload an mp3/m4a file or directory of them. |
 | `sync URL --playlist X [--force]` | Download a video as a single track and upload it. |
-| `sync-album URL [--playlist X] [--force]` | Download a chaptered video and upload each chapter as a track; playlist name defaults to the video title (created if missing). |
+| `sync-album URL [--playlist X] [--force]` | Download a chaptered video and upload each chapter as a track; the playlist defaults to the video title. |
 
-`--playlist` accepts a numeric `kind` id (e.g. `3` = Liked) **or** a playlist name. Names are looked up; `upload`, `sync` and `sync-album` create a missing one as a private playlist, and the other commands error. Required on `upload` and `sync`; defaults to the video title on `sync-album`.
+`--playlist` accepts a numeric `kind` id (e.g. `3` = Liked) **or** a playlist name. Names are looked up; `upload`, `sync` and `sync-album` create a missing one as a private playlist, and the other commands error.
 
 ## Example
 
@@ -53,8 +53,8 @@ Re-run the same command and it's a no-op: yt2ym checks both the local cache and 
 
 ## How it works
 
-- **Audio**: yt-dlp's native m4a/AAC (no transcoding step). `--no-embed-chapters` keeps Yandex from picking a chapter atom name as the track title.
-- **Tags**: track titles and track numbers are written via `mutagen` (`mutagen.id3` for mp3, `mutagen.mp4` for m4a) from yt-dlp's chapter filename pattern.
+- **Audio**: m4a/AAC as the site serves it, not re-encoded.
+- **Tags**: each chapter is uploaded with its own title and track number.
 - **Order**: Yandex displays user-uploaded tracks newest-first, so yt2ym uploads in reverse to make chapter 01 appear first.
 - **Idempotency** is state-based:
   - Download skips if expected audio files already exist in the cache dir.
