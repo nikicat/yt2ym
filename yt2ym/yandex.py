@@ -192,6 +192,8 @@ class YandexMusic:
     """The only way the tool talks to Yandex Music, as the account that owns the token."""
 
     TOKEN_FILE = Path.home() / ".config" / "yt2ym" / "token"
+    UPLOAD_ATTEMPTS = 4
+    """How many times upload_many tries each file before it gives up."""
 
     def __init__(self, token: Token) -> None:
         self.token = token
@@ -328,7 +330,7 @@ class YandexMusic:
         return {t for item in pl.tracks if (t := item.effective_title)}
 
     async def upload_many(
-        self, files: list[Path], playlist_kind: PlaylistKind, *, attempts: int = 4
+        self, files: list[Path], playlist_kind: PlaylistKind
     ) -> None:
         # Yandex displays user-uploaded tracks newest-first, so upload in reverse
         # order to get caller-supplied order on display.
@@ -336,15 +338,14 @@ class YandexMusic:
         # retry transparently before giving up.
         async with self._api() as api:
             for f in reversed(files):
-                for attempt in range(1, attempts + 1):
-                    logger.info("→ uploading %s (playlist kind=%s)%s",
-                                f.name, playlist_kind,
-                                "" if attempt == 1 else f" [retry {attempt}/{attempts}]")
+                for attempt in range(1, self.UPLOAD_ATTEMPTS + 1):
+                    retry = f" [retry {attempt}/{self.UPLOAD_ATTEMPTS}]" if attempt > 1 else ""
+                    logger.info("→ uploading %s (playlist kind=%s)%s", f.name, playlist_kind, retry)
                     try:
                         await api.upload_one(f, playlist_kind)
                         break
                     except RuntimeError as e:
-                        if attempt == attempts:
+                        if attempt == self.UPLOAD_ATTEMPTS:
                             raise
                         delay = 2 ** (attempt - 1)
                         logger.warning("upload failed (%s); retrying in %ds", e, delay)
