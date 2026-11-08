@@ -88,10 +88,17 @@ class Chapter:
     number: int
     title: TrackTitle
 
-    OUTTMPL: ClassVar[str] = "%(section_number)02d - %(section_title)s.%(ext)s"
+    # Chapter files get a directory of their own, because a video title can look like one too.
+    DIR: ClassVar[str] = "chapters"
+    OUTTMPL: ClassVar[str] = f"{DIR}/%(section_number)02d - %(section_title)s.%(ext)s"
     """The yt-dlp output template for chapter files. `parse` reads the names it writes."""
 
     _STEM: ClassVar[re.Pattern[str]] = re.compile(r"(?P<number>\d+)\s*-\s*(?P<title>.+)")
+
+    @classmethod
+    def files_in(cls, dest: Path) -> list[Path]:
+        """Returns the chapter files that yt-dlp wrote for the download in `dest`."""
+        return collect_audio(dest / cls.DIR) if (dest / cls.DIR).is_dir() else []
 
     @classmethod
     def parse(cls, path: Path) -> Chapter | None:
@@ -201,12 +208,10 @@ def collect_audio(path: Path) -> list[Path]:
 def existing_audio(dest: Path, split_chapters: bool) -> list[Path]:
     if not dest.exists():
         return []
-    all_audio = collect_audio(dest)
-    chapters = [p for p in all_audio if Chapter.parse(p)]
+    chapters = Chapter.files_in(dest)
     if split_chapters and chapters:
         return chapters
-    singles = [p for p in all_audio if not Chapter.parse(p)]
-    return singles or all_audio
+    return collect_audio(dest) or chapters
 
 
 def extract_cover(path: Path) -> Cover | None:
@@ -287,7 +292,7 @@ def download_to(
 
     # yt-dlp's --embed-metadata writes no per-chapter title or track number,
     # so each chapter file gets them from its file name.
-    for f in collect_audio(dest):
+    for f in Chapter.files_in(dest):
         if ch := Chapter.parse(f):
             write_title_track(f, ch.title, ch.number)
 

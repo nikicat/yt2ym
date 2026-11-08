@@ -53,25 +53,30 @@ def test_collect_audio_dir_filters_extensions(tmp_path: Path):
     assert sorted(p.name for p in out) == ["a.mp3", "b.m4a"]
 
 
+def make_cache(dest: Path, video: str, chapters: list[str]) -> None:
+    (dest / Chapter.DIR).mkdir(parents=True)
+    (dest / video).touch()
+    for name in chapters:
+        (dest / Chapter.DIR / name).touch()
+
+
 def test_existing_audio_returns_chapters_when_split(tmp_path: Path):
-    for name in ("01 - A.mp3", "02 - B.mp3", "loose.mp3"):
-        (tmp_path / name).touch()
+    # The video's own title looks like a chapter, but it is not one.
+    make_cache(tmp_path, "1989 - Live.mp3", ["01 - A.mp3", "02 - B.mp3"])
     out = existing_audio(tmp_path, split_chapters=True)
     assert sorted(p.name for p in out) == ["01 - A.mp3", "02 - B.mp3"]
 
 
-def test_existing_audio_returns_singles_when_not_split(tmp_path: Path):
-    (tmp_path / "01 - A.mp3").touch()
-    (tmp_path / "loose.mp3").touch()
+def test_existing_audio_returns_the_video_when_not_split(tmp_path: Path):
+    make_cache(tmp_path, "loose.mp3", ["01 - A.mp3"])
     out = existing_audio(tmp_path, split_chapters=False)
     assert [p.name for p in out] == ["loose.mp3"]
 
 
-def test_existing_audio_falls_back_to_all_when_no_singles(tmp_path: Path):
-    (tmp_path / "01 - A.mp3").touch()
-    (tmp_path / "02 - B.mp3").touch()
-    out = existing_audio(tmp_path, split_chapters=False)
-    assert sorted(p.name for p in out) == ["01 - A.mp3", "02 - B.mp3"]
+def test_existing_audio_returns_the_video_when_it_has_no_chapters(tmp_path: Path):
+    make_cache(tmp_path, "loose.mp3", [])
+    out = existing_audio(tmp_path, split_chapters=True)
+    assert [p.name for p in out] == ["loose.mp3"]
 
 
 def test_existing_audio_missing_dir(tmp_path: Path):
