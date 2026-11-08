@@ -49,6 +49,12 @@ MediaUrl = NewType("MediaUrl", str)
 TrackTitle = NewType("TrackTitle", str)
 """The title of a track, as Yandex Music shows it in a playlist."""
 
+TrackNumber = NewType("TrackNumber", int)
+"""The number of a track within its album, counted from 1."""
+
+TrackIndex = NewType("TrackIndex", int)
+"""The position of a track in a playlist, counted from 0 at the top."""
+
 VideoId = NewType("VideoId", str)
 """The id that the media's site gives the video, such as a YouTube video id."""
 
@@ -85,7 +91,7 @@ class Cover:
 class Chapter:
     """A chapter of a split video, as its file name spells it: "NN - title.ext"."""
 
-    number: int
+    number: TrackNumber
     title: TrackTitle
 
     # Chapter files get a directory of their own, because a video title can look like one too.
@@ -105,7 +111,7 @@ class Chapter:
         """Returns the chapter that `path` holds, or None when it is not a chapter file."""
         if not is_audio(path) or not (m := cls._STEM.fullmatch(path.stem)):
             return None
-        return cls(int(m["number"]), TrackTitle(m["title"]))
+        return cls(TrackNumber(int(m["number"])), TrackTitle(m["title"]))
 
 
 class VideoMeta(BaseModel, frozen=True):
@@ -133,6 +139,33 @@ class Playlist(BaseModel):
     revision: int
     track_count: int = Field(0, alias="trackCount")
     tracks: list[PlaylistItem] = []
+
+    def repeats(self, titles: set[TrackTitle]) -> list[TrackIndex]:
+        """Returns the positions of the tracks that repeat an earlier track of one of `titles`."""
+        seen: set[TrackTitle] = set()
+        out: list[TrackIndex] = []
+        for i, item in enumerate(self.tracks):
+            if (t := item.effective_title) is not None and t in titles:
+                if t in seen:
+                    out.append(TrackIndex(i))
+                seen.add(t)
+        return out
+
+
+@dataclass(frozen=True, slots=True)
+class TrackSpan:
+    """The tracks of a playlist from position `start` up to, but not including, `stop`."""
+
+    start: TrackIndex
+    stop: TrackIndex
+
+    @classmethod
+    def at(cls, i: TrackIndex) -> TrackSpan:
+        return cls(i, TrackIndex(i + 1))
+
+    @classmethod
+    def all_of(cls, playlist: Playlist) -> TrackSpan:
+        return cls(TrackIndex(0), TrackIndex(playlist.track_count))
 
 
 class PlaylistResponse(BaseModel):
@@ -258,7 +291,7 @@ def file_title(path: Path) -> TrackTitle:
     return TrackTitle(path.name)
 
 
-def write_title_track(path: Path, title: TrackTitle, track: int) -> None:
+def write_title_track(path: Path, title: TrackTitle, track: TrackNumber) -> None:
     """Write title + track-number tags appropriate to the file format."""
     suffix = path.suffix.lower()
     if suffix == ".mp3":
@@ -356,21 +389,26 @@ class _Api:
         async with self.session.post(self.playlist_url(kind, "/cover/upload"), data=form) as r:
             await _ok_text(r, "playlist cover upload")
 
-    async def delete_tracks(self, kind: PlaylistKind, playlist: Playlist) -> None:
-        """Removes every track from playlist `kind`.
+    async def delete_tracks(
+        self, kind: PlaylistKind, playlist: Playlist, spans: list[TrackSpan]
+    ) -> None:
+        """Removes the tracks in `spans` from playlist `kind`.
 
-        The given `playlist` is the playlist's current state. Its revision and track count
-        go into the request.
+        The given `playlist` is the playlist's current state, and its revision goes into
+        the request.
         """
+        # The /change endpoint applies a diff to the playlist. Deleting from the end keeps
+        # the earlier positions valid, however the ops are applied.
+        ops = [
+            {"op": "delete", "from": s.start, "to": s.stop}
+            for s in sorted(spans, key=lambda s: s.start, reverse=True)
+        ]
         form = aiohttp.FormData()
         form.add_field("kind", str(kind))
         form.add_field("revision", str(playlist.revision))
-        form.add_field(
-            "diff", json.dumps([{"op": "delete", "from": 0, "to": playlist.track_count}])
-        )
-        # The /change endpoint applies a diff to the playlist. This one deletes every index.
+        form.add_field("diff", json.dumps(ops))
         async with self.session.post(self.playlist_url(kind, "/change"), data=form) as r:
-            await _ok_text(r, "playlist clear")
+            await _ok_text(r, "playlist change")
 
     async def upload_one(self, file_path: Path, playlist_kind: PlaylistKind) -> None:
         file_name = file_path.name
@@ -513,14 +551,26 @@ class YandexMusic:
         async with self._api() as api:
             return await api.fetch_playlist(kind)
 
-    async def clear_playlist(self, kind: PlaylistKind) -> int:
-        """Removes every track from playlist `kind`. Returns the number of tracks removed."""
+    async def clear_playlist(self, kind: PlaylistKind) -> list[PlaylistItem]:
+        """Removes every track from playlist `kind`, and returns the tracks it removed."""
         async with self._api() as api:
             pl = await api.fetch_playlist(kind)
-            if not pl.track_count:
-                return 0
-            await api.delete_tracks(kind, pl)
-        return pl.track_count
+            if pl.track_count:
+                await api.delete_tracks(kind, pl, [TrackSpan.all_of(pl)])
+        return pl.tracks
+
+    async def remove_repeats(
+        self, kind: PlaylistKind, titles: set[TrackTitle]
+    ) -> list[PlaylistItem]:
+        """Removes from playlist `kind` every track that repeats an earlier one of `titles`.
+
+        Returns the tracks it removed.
+        """
+        async with self._api() as api:
+            pl = await api.fetch_playlist(kind)
+            if repeats := pl.repeats(titles):
+                await api.delete_tracks(kind, pl, [TrackSpan.at(i) for i in repeats])
+        return [pl.tracks[i] for i in repeats]
 
     async def playlist_track_titles(self, kind: PlaylistKind) -> set[TrackTitle]:
         """Returns the titles of the tracks in playlist `kind`."""
@@ -589,7 +639,7 @@ class Cli:
         if replace:
             cleared = await self.ym.clear_playlist(kind)
             if cleared:
-                logger.info("cleared %d track(s) from playlist kind=%s", cleared, kind)
+                logger.info("cleared %d track(s) from playlist kind=%s", len(cleared), kind)
             to_upload = files
         else:
             existing = await self.ym.playlist_track_titles(kind)
@@ -602,6 +652,9 @@ class Cli:
             logger.info("nothing to upload to kind=%s", kind)
             return
         await self.ym.upload_many(to_upload, kind)
+        # A retried upload can land twice, when the failed attempt had reached Yandex.
+        if removed := await self.ym.remove_repeats(kind, {file_title(f) for f in to_upload}):
+            logger.info("removed %d repeated track(s) from playlist kind=%s", len(removed), kind)
 
     async def _put_cover(self, kind: PlaylistKind, cover: Cover, source: Path) -> None:
         await self.ym.set_playlist_cover(kind, cover)
@@ -637,7 +690,7 @@ class Cli:
                 logger.info("aborted")
                 return
         cleared = await self.ym.clear_playlist(kind)
-        logger.info("cleared %d track(s) from playlist kind=%s", cleared, kind)
+        logger.info("cleared %d track(s) from playlist kind=%s", len(cleared), kind)
 
     def download(
         self, url: MediaUrl, out: Path | None, split_chapters: bool, *, redownload: bool

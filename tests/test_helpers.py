@@ -22,7 +22,7 @@ from yt2ym import (
     ("03-Trimmed.mp3", 3, "Trimmed"),
 ])
 def test_chapter_parse(name: str, num: int, title: str):
-    assert Chapter.parse(Path(name)) == Chapter(num, yt2ym.TrackTitle(title))
+    assert Chapter.parse(Path(name)) == Chapter(yt2ym.TrackNumber(num), yt2ym.TrackTitle(title))
 
 
 @pytest.mark.parametrize("name", [
@@ -36,7 +36,7 @@ def test_chapter_parse_rejects(name: str):
 
 def test_chapter_outtmpl_round_trips():
     name = Chapter.OUTTMPL % {"section_number": 7, "section_title": "A - B", "ext": "m4a"}
-    assert Chapter.parse(Path(name)) == Chapter(7, yt2ym.TrackTitle("A - B"))
+    assert Chapter.parse(Path(name)) == Chapter(yt2ym.TrackNumber(7), yt2ym.TrackTitle("A - B"))
 
 
 def test_collect_audio_file(tmp_path: Path):
@@ -103,6 +103,15 @@ def test_playlist_response_titles_and_defaults():
     assert (pl.revision, pl.track_count) == (7, 3)
     assert [t.effective_title for t in pl.tracks] == ["wrapped", "bare", None]
     assert PlaylistResponse.model_validate_json('{"result": {"revision": 1}}').result.tracks == []
+
+
+def test_playlist_repeats():
+    pl = PlaylistResponse.model_validate_json(
+        '{"result": {"revision": 1, "tracks": ['
+        '{"title": "a"}, {"track": {"title": "b"}}, {"title": "a"}, {"title": "x"},'
+        ' {"title": "x"}, {"track": {"title": "b"}}]}}'
+    ).result
+    assert pl.repeats({yt2ym.TrackTitle("a"), yt2ym.TrackTitle("b")}) == [2, 5]
 
 
 @pytest.mark.parametrize("key", ["post-target", "post_target"])
