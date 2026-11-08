@@ -3,8 +3,7 @@ yt2ym — download audio (YouTube, X, any yt-dlp site) and upload to Yandex Musi
 
 Run via:  uv run yt2ym.py <subcommand> ...
 
-Token: run `login`, or pass --token, or set YANDEX_MUSIC_TOKEN, or place it in
-~/.config/yt2ym/token.
+Run `yt2ym --help` for where the token comes from.
 
 Upload logic adapted from https://github.com/Kay0k1/yandex-music-uploader.
 """
@@ -348,9 +347,6 @@ class YandexMusic:
     def from_args(cls, cli_token: str | None) -> YandexMusic:
         if cli_token:
             return cls(Token(cli_token.strip()))
-        env = os.getenv("YANDEX_MUSIC_TOKEN")
-        if env:
-            return cls(Token(env.strip()))
         if cls.TOKEN_FILE.exists():
             return cls(Token(cls.TOKEN_FILE.read_text().strip()))
         raise click.ClickException(
@@ -412,17 +408,33 @@ class YandexMusic:
             raise click.ClickException("failed to create playlist")
         return pl
 
-    async def resolve_or_create_playlist(self, playlist: PlaylistRef) -> PlaylistKind:
-        """Returns the kind of `playlist`.
+    async def _find_playlist(self, title: PlaylistTitle) -> PlaylistKind | None:
+        """Returns the kind of the playlist titled exactly `title`, or None when there is none."""
+        for p in await self.list_playlists():
+            if p.title == title and p.kind is not None:
+                return PlaylistKind(p.kind)
+        return None
 
-        A name selects the playlist with that exact title, and creates a private one when
-        there is none.
+    async def resolve_playlist(self, playlist: PlaylistRef) -> PlaylistKind:
+        """Returns the kind of `playlist`. A name selects the playlist with that exact title.
+
+        Errors with click.ClickException when no playlist has that title.
         """
         if isinstance(playlist, PlaylistKind):
             return playlist
-        for p in await self.list_playlists():
-            if p.title == playlist and p.kind is not None:
-                return PlaylistKind(p.kind)
+        if (kind := await self._find_playlist(playlist)) is None:
+            raise click.ClickException(f"no playlist titled {playlist!r}")
+        return kind
+
+    async def resolve_or_create_playlist(self, playlist: PlaylistRef) -> PlaylistKind:
+        """Returns the kind of `playlist`, as resolve_playlist does.
+
+        Creates a private playlist when no playlist has that title.
+        """
+        if isinstance(playlist, PlaylistKind):
+            return playlist
+        if (kind := await self._find_playlist(playlist)) is not None:
+            return kind
         pl = await self.create_playlist(playlist, public=False)
         logger.info("created playlist %r (kind=%s)", pl.title, pl.kind)
         assert pl.kind is not None
@@ -558,7 +570,7 @@ class Cli:
                     len(cover.data), cover.mime, source.name)
 
     async def set_cover(self, playlist: PlaylistRef, source: Path) -> None:
-        kind = await self.ym.resolve_or_create_playlist(playlist)
+        kind = await self.ym.resolve_playlist(playlist)
         if is_audio(source):
             await self._set_cover_from(kind, source)
             return
@@ -567,7 +579,7 @@ class Cli:
         logger.info("set playlist kind=%s cover from %s", kind, source.name)
 
     async def clear_playlist(self, playlist: PlaylistRef, yes: bool) -> None:
-        kind = await self.ym.resolve_or_create_playlist(playlist)
+        kind = await self.ym.resolve_playlist(playlist)
         if not yes:
             pl = await self.ym.fetch_playlist(kind)
             if not click.confirm(
@@ -625,8 +637,11 @@ def parse_playlist(
 PLAYLIST_HELP = (
     f'playlist by kind id (e.g. "{LIKED_KIND}" = Liked) or by name (creates if missing).'
 )
-TOKEN_HELP = "Yandex Music OAuth token (else $YANDEX_MUSIC_TOKEN / ~/.config/yt2ym/token)"
-OUT_HELP = "output directory (default: ~/.cache/yt2ym/<videoid>/)"
+TOKEN_HELP = (
+    "Yandex Music OAuth token (else $YANDEX_MUSIC_TOKEN, "
+    f"else ~/{YandexMusic.TOKEN_FILE.relative_to(Path.home())})"
+)
+OUT_HELP = "output directory (default: $XDG_CACHE_HOME/yt2ym/<videoid>/, or ~/.cache/yt2ym/…)"
 FORCE_HELP = "bypass idempotency: re-download, and wipe the playlist before re-uploading"
 
 

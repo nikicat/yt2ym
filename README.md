@@ -32,14 +32,14 @@ This runs the OAuth 2.0 **device flow** against Yandex: it prints a short user-c
 | `login` | OAuth device flow → save token. |
 | `playlists` | List your playlists with their `kind` ids. |
 | `create-playlist TITLE [--public]` | Create a new playlist (private by default). |
-| `clear-playlist PLAYLIST [--yes]` | Remove every track from a playlist (by `kind` or name). |
-| `set-cover PLAYLIST PATH` | Set a playlist's cover from an mp3/m4a (embedded cover) or image. |
-| `download URL [--out DIR] [--single] [--force]` | Download audio to `~/.cache/yt2ym/<videoid>/`, splitting by chapters if present. |
+| `clear-playlist PLAYLIST [--yes]` | Remove every track from a playlist (by `kind` or name; errors on an unknown name). |
+| `set-cover PLAYLIST PATH` | Set a playlist's cover from an mp3/m4a (embedded cover) or image (errors on an unknown name). |
+| `download URL [--out DIR] [--single] [--force]` | Download audio to `$XDG_CACHE_HOME/yt2ym/<videoid>/` (`~/.cache/yt2ym/<videoid>/` by default), splitting by chapters if present. |
 | `upload PATH --playlist X [--force]` | Upload an mp3/m4a file or directory of them. |
 | `sync URL --playlist X [--force]` | Download a video as a single track and upload it. |
 | `sync-album URL [--playlist X] [--force]` | Download a chaptered video and upload each chapter as a track; playlist name defaults to the video title (created if missing). |
 
-`--playlist` accepts a numeric `kind` id (e.g. `3` = Liked) **or** a playlist name. Names are looked up; if missing, a new private playlist is created. Required on `upload` and `sync`; defaults to the video title on `sync-album`.
+`--playlist` accepts a numeric `kind` id (e.g. `3` = Liked) **or** a playlist name. Names are looked up; `upload`, `sync` and `sync-album` create a missing one as a private playlist, and the other commands error. Required on `upload` and `sync`; defaults to the video title on `sync-album`.
 
 ## Example
 
@@ -60,7 +60,7 @@ Re-run the same command and it's a no-op: yt2ym checks both the local cache and 
   - Download skips if expected audio files already exist in the cache dir.
   - Upload fetches the target playlist's track titles and only uploads files whose title isn't already there.
   - `--force` bypasses both (and wipes the playlist before re-uploading).
-- **Cache layout**: `~/.cache/yt2ym/<videoid>/` per video. Override with `--out`.
+- **Cache layout**: `$XDG_CACHE_HOME/yt2ym/<videoid>/` (default `~/.cache/yt2ym/<videoid>/`) per video. Override with `--out`.
 
 ## Token / credentials
 
