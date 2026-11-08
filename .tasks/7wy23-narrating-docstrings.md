@@ -5,7 +5,7 @@ tags: [unsmell]
 # Rewrite narrating docstrings as contracts
 
 ## Goal
-`YandexMusic.login`, `Cli._download_to`, `Cli._upload_files`, `Cli.sync` docs retell their steps (arrows, "first wipes …, then uploads"); `login` ("Smart TV client"), `clear_playlist` ("via the /change endpoint") and `_download_to` ("native m4a/aac") name the mechanism; `file_title` opens with its caller's reason.
+`YandexMusic.login`, `download_to`, `Cli._upload_files`, `Cli.sync` docs retell their steps (arrows, "first wipes …, then uploads"); `login` ("Smart TV client"), `clear_playlist` ("via the /change endpoint") and `_download_to` ("native m4a/aac") name the mechanism; `file_title` opens with its caller's reason.
 
 Done when the smell is gone and `uv run pyright`, `ruff check` and `pytest` pass.
 ## Next

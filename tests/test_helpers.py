@@ -6,7 +6,7 @@ import pytest
 
 import yt2ym
 from yt2ym import (
-    CHAPTER_PAT,
+    Chapter,
     PlaylistResponse,
     UploadTarget,
     collect_audio,
@@ -17,13 +17,12 @@ from yt2ym import (
 
 
 @pytest.mark.parametrize("name,num,title", [
-    ("01 - Intro.mp3", "01", "Intro"),
-    ("02 - Chapter Two.m4a", "02", "Chapter Two"),
-    ("03-Trimmed.mp3", "03", "Trimmed"),
+    ("01 - Intro.mp3", 1, "Intro"),
+    ("02 - Chapter Two.m4a", 2, "Chapter Two"),
+    ("03-Trimmed.mp3", 3, "Trimmed"),
 ])
-def test_chapter_pat_matches(name: str, num: str, title: str):
-    m = CHAPTER_PAT.match(name)
-    assert m and m.group(1) == num and m.group(2) == title
+def test_chapter_parse(name: str, num: int, title: str):
+    assert Chapter.parse(Path(name)) == Chapter(num, yt2ym.TrackTitle(title))
 
 
 @pytest.mark.parametrize("name", [
@@ -31,8 +30,13 @@ def test_chapter_pat_matches(name: str, num: str, title: str):
     "01 - song.flac",
     "song.txt",
 ])
-def test_chapter_pat_no_match(name: str):
-    assert CHAPTER_PAT.match(name) is None
+def test_chapter_parse_rejects(name: str):
+    assert Chapter.parse(Path(name)) is None
+
+
+def test_chapter_outtmpl_round_trips():
+    name = Chapter.OUTTMPL % {"section_number": 7, "section_title": "A - B", "ext": "m4a"}
+    assert Chapter.parse(Path(name)) == Chapter(7, yt2ym.TrackTitle("A - B"))
 
 
 def test_collect_audio_file(tmp_path: Path):
@@ -125,7 +129,7 @@ def test_download_audio_split_chapters_options(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(yt2ym, "YoutubeDL", FakeYoutubeDL)
     download_audio(URL, tmp_path, split_chapters=True)
     params = FakeYoutubeDL.params
-    chapter = tmp_path / "%(section_number)02d - %(section_title)s.%(ext)s"
+    chapter = tmp_path / Chapter.OUTTMPL
     assert params["outtmpl"]["chapter"] == str(chapter)
     assert any(pp["key"] == "FFmpegSplitChapters" for pp in params["postprocessors"])
 

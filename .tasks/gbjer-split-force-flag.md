@@ -5,7 +5,7 @@ tags: [unsmell]
 # Split the two meanings of --force
 
 ## Goal
-One `force` bool carries two meanings (re-download; wipe the playlist before uploading) and is threaded through `download`, `upload`, `sync`, `_download_to` and `_upload_files`, where it only picks a branch; with `split_chapters`, `url` and `out` it forms a clump passed from `download`/`sync` to `_download_to`.
+One `force` bool carries two meanings (re-download; wipe the playlist before uploading) and is threaded through `download`, `upload`, `sync`, `download_to` and `_upload_files`, where it only picks a branch; with `split_chapters`, `url` and `out` it forms a clump passed from `download`/`sync` to `download_to`.
 
 Done when the smell is gone and `uv run pyright`, `ruff check` and `pytest` pass.
 ## Next
